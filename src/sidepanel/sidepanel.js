@@ -559,16 +559,53 @@ async function handleScanChat() {
     state.discoveredChannels = [];
     state.selectedChatIds.clear();
 
+    // 1. Scan active Reddit tab via Chat Bridge
+    if (scanModern) {
+      log('CHAT: Querying active Reddit tab DOM...', 'info');
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab && tab.id && tab.url && tab.url.includes('reddit.com')) {
+          let domResponse = null;
+          try {
+            domResponse = await chrome.tabs.sendMessage(tab.id, { type: 'SCAN_CHAT_DOM' });
+          } catch (connErr) {
+            // If content script was not yet injected (e.g. extension reloaded without tab refresh), inject dynamically
+            if (chrome.scripting) {
+              try {
+                await chrome.scripting.executeScript({
+                  target: { tabId: tab.id },
+                  files: ['src/content/content-script.js', 'src/content/chat-bridge.js']
+                });
+                await new Promise(r => setTimeout(r, 400));
+                domResponse = await chrome.tabs.sendMessage(tab.id, { type: 'SCAN_CHAT_DOM' });
+              } catch (_) {}
+            }
+          }
+
+          if (domResponse && domResponse.channels && domResponse.channels.length > 0) {
+            state.discoveredChannels = domResponse.channels;
+            log(`CHAT: Discovered ${domResponse.channels.length} conversations in active Reddit tab!`, 'success');
+          }
+        }
+      } catch (tabErr) {
+        console.warn('[SidePanel] Active tab scan warning:', tabErr.message);
+      }
+
+      // If tab DOM didn't return channels, attempt GraphQL / REST fallback
+      if (state.discoveredChannels.length === 0) {
+        log('CHAT: Trying GraphQL chat fallback...', 'info');
+        const gqlChannels = await state.chatCleaner.fetchModernChannels();
+        if (gqlChannels.length > 0) {
+          state.discoveredChannels = gqlChannels;
+        }
+      }
+    }
+
+    // 2. Scan Legacy PMs
     if (scanPMs) {
       log('CHAT: Querying legacy private messages (/message/messages)...', 'info');
       state.discoveredPMs = await state.chatCleaner.fetchLegacyPMs(100);
-      log(`CHAT: Found ${state.discoveredPMs.length} legacy private messages.`, 'success');
-    }
-
-    if (scanModern) {
-      log('CHAT: Querying modern chat channels via GraphQL...', 'info');
-      state.discoveredChannels = await state.chatCleaner.fetchModernChannels();
-      log(`CHAT: Found ${state.discoveredChannels.length} modern chat channels.`, 'success');
+      log(`CHAT: Found ${state.discoveredPMs.length} legacy private messages.`, state.discoveredPMs.length > 0 ? 'success' : 'info');
     }
 
     // Default select all
@@ -579,11 +616,18 @@ async function handleScanChat() {
 
     const totalFound = state.discoveredPMs.length + state.discoveredChannels.length;
     if (totalFound > 0) {
-      el.chatResults.innerHTML = `<span style="color: var(--accent-emerald);">✓ Discovered ${totalFound} total conversations/messages.</span>`;
+      el.chatResults.innerHTML = `<span style="color: var(--accent-emerald);">✓ Discovered ${totalFound} conversations/messages ready for purge.</span>`;
       el.btnExportChat.disabled = false;
       el.btnNukeChat.disabled = false;
     } else {
-      el.chatResults.innerHTML = '<span class="muted-text">No active messages or chat channels found.</span>';
+      el.chatResults.innerHTML = `
+        <div style="color: var(--accent-amber); font-weight: 500;">
+          ⚠️ 0 conversations found.
+        </div>
+        <div style="margin-top: 4px; font-size: 10px; color: var(--text-secondary);">
+          Make sure your Reddit tab has the chat dock open, or refresh your Reddit tab (F5) and click Scan again.
+        </div>
+      `;
       el.btnExportChat.disabled = true;
       el.btnNukeChat.disabled = true;
     }
@@ -637,15 +681,17 @@ function renderChatChannelsList() {
   state.discoveredChannels.forEach(ch => {
     const cid = ch.id || ch.channelUrl;
     const isChecked = state.selectedChatIds.has(cid) ? 'checked' : '';
+    const snippet = ch.preview ? ` • ${escapeHtml(ch.preview.slice(0, 24))}` : '';
+    const timeLabel = ch.time ? ` (${escapeHtml(ch.time)})` : '';
     html += `
       <div class="chat-item-card" data-id="${cid}">
         <input type="checkbox" class="chat-checkbox" data-id="${cid}" ${isChecked}>
         <div class="chat-item-details">
           <div class="chat-item-title">
             <span style="color: var(--accent-ember); font-size: 9px; font-weight: 700;">[CHAT]</span>
-            ${escapeHtml(ch.name || 'Conversation')}
+            u/${escapeHtml(ch.name || 'Conversation')}${timeLabel}
           </div>
-          <div class="chat-item-meta">${ch.type.toUpperCase()} • ${ch.memberCount || 2} members</div>
+          <div class="chat-item-meta">${ch.type.toUpperCase()}${snippet}</div>
         </div>
       </div>
     `;
@@ -718,6 +764,24 @@ async function handleNukeChats() {
   log(`CHAT NUKE: Starting purge of ${count} items...`, 'warn');
 
   try {
+    // 1. Purge visible messages via active tab DOM bridge if tab is open
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab && tab.id && tab.url && tab.url.includes('reddit.com')) {
+        log('CHAT NUKE: Executing DOM purge in active chat tab...', 'cyan');
+        const purgeRes = await chrome.tabs.sendMessage(tab.id, {
+          type: 'PURGE_VISIBLE_CHAT',
+          username: state.session?.username
+        });
+        if (purgeRes && purgeRes.totalDeleted > 0) {
+          log(`CHAT NUKE: Deleted ${purgeRes.totalDeleted} messages in open conversation via DOM bridge.`, 'success');
+        }
+      }
+    } catch (domErr) {
+      console.warn('[SidePanel] DOM bridge note:', domErr.message);
+    }
+
+    // 2. Purge PMs and channels via API client
     const stats = await state.chatCleaner.nukeChats(
       {
         deletePMs: el.chatOptPms ? el.chatOptPms.checked : true,
@@ -731,8 +795,9 @@ async function handleNukeChats() {
       }
     );
 
-    log(`CHAT NUKE FINISHED: Deleted ${stats.pmsDeleted} PMs, Left ${stats.channelsLeft} Channels, Errors: ${stats.errors}`, 'success');
-    el.chatResults.innerHTML = `<span style="color: var(--accent-emerald);">✓ Purge completed! Deleted ${stats.pmsDeleted} PMs, cleared ${stats.channelsLeft} channels.</span>`;
+    const totalCleaned = stats.pmsDeleted + stats.channelsLeft;
+    log(`CHAT NUKE FINISHED: Purged ${totalCleaned} items (PMs: ${stats.pmsDeleted}, Channels: ${stats.channelsLeft}, Errors: ${stats.errors})`, 'success');
+    el.chatResults.innerHTML = `<span style="color: var(--accent-emerald);">✓ Purge completed! Cleaned ${totalCleaned} items.</span>`;
   } catch (err) {
     log(`CHAT NUKE ERROR: ${err.message}`, 'error');
     el.chatResults.innerHTML = `<span style="color: var(--accent-danger);">⚠️ Error during chat nuke: ${err.message}</span>`;

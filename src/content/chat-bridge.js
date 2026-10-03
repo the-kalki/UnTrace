@@ -1,14 +1,11 @@
 /**
  * UnTrace - Reddit Chat DOM Automation Bridge
- * Injected on reddit.com/chat to automate discovery, message deletion, and channel leaving
+ * Injected across Reddit domains (*://*.reddit.com/*) to automate discovery,
+ * message deletion, and conversation purging in both full-page chat and the floating chat dock.
  */
 
 (function () {
-  if (!window.location.pathname.startsWith('/chat')) {
-    return;
-  }
-
-  console.log('[UnTrace] Chat Bridge active on Reddit Chat interface.');
+  console.log('[UnTrace] Chat Bridge content script loaded on:', window.location.href);
 
   let isPurging = false;
   let abortPurge = false;
@@ -19,16 +16,19 @@
         const channels = scanChannelsFromDOM();
         const activeConversation = getActiveConversationInfo();
         const messageCount = countVisibleMessages();
+        const isChatOpen = isChatWidgetVisible();
 
         sendResponse({
           success: true,
           url: window.location.href,
+          isChatOpen,
           channels,
           activeConversation,
           messageCount
         });
       } catch (err) {
-        sendResponse({ success: false, error: err.message });
+        console.error('[UnTrace Chat Bridge] Error scanning chat DOM:', err);
+        sendResponse({ success: false, error: err.message, channels: [] });
       }
       return true;
     }
@@ -50,7 +50,7 @@
 
       (async () => {
         try {
-          const result = await executeChatPurgeLoop();
+          const result = await executeChatPurgeLoop(message.username);
           isPurging = false;
           sendResponse({ success: true, ...result });
         } catch (err) {
@@ -75,23 +75,114 @@
   });
 
   /**
-   * Scans sidebar channel links and active threads
+   * Checks if Reddit Chat (dock or full page) is present on screen
+   */
+  function isChatWidgetVisible() {
+    if (window.location.pathname.startsWith('/chat')) return true;
+    const chatElements = document.querySelectorAll(
+      '[role="dialog"], aside, [aria-label*="chat" i], div[class*="Chat"], [data-testid*="chat"]'
+    );
+    return chatElements.length > 0;
+  }
+
+  /**
+   * Deep scan of channels/conversations across Reddit Chat DOM
    */
   function scanChannelsFromDOM() {
     const channelItems = [];
-    const elements = document.querySelectorAll('a[href*="/chat/channel/"], [data-testid="channel-item"], [role="listitem"]');
+    const seenIds = new Set();
 
-    elements.forEach((el, index) => {
+    // 1. Scan links matching chat patterns
+    const links = document.querySelectorAll(
+      'a[href*="/chat/channel/"], a[href*="/chat/user/"], a[href*="/chat/"], [data-testid*="channel-item"], [data-testid*="conversation"]'
+    );
+
+    links.forEach((el, index) => {
       const href = el.getAttribute('href') || '';
-      const text = el.innerText || el.textContent || '';
-      const name = text.split('\n')[0]?.trim() || `Channel ${index + 1}`;
+      const text = (el.innerText || el.textContent || '').trim();
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      const name = lines[0] || `Conversation ${index + 1}`;
+      const id = href || `ch_${name}`;
 
-      if (name && name.length < 60) {
+      if (!seenIds.has(id) && name.length < 50 && !['Chats', 'Requests', 'Threads'].includes(name)) {
+        seenIds.add(id);
         channelItems.push({
-          id: href || `ch_${index}`,
-          name: name,
-          url: href ? `https://www.reddit.com${href}` : null
+          id,
+          channelUrl: href,
+          name: name.replace(/^u\//, ''),
+          preview: lines[1] || '',
+          time: lines[2] || '',
+          type: 'direct',
+          memberCount: 2
         });
+      }
+    });
+
+    // 2. Scan floating chat dock / popup elements (as seen in Reddit's multi-pane chat widget)
+    const chatRoots = document.querySelectorAll(
+      '[role="dialog"], aside, [aria-label*="chat" i], section, div[class*="Chat"]'
+    );
+
+    chatRoots.forEach(root => {
+      // Find rows that represent chat conversation list items
+      const candidateRows = root.querySelectorAll(
+        '[role="button"], [role="listitem"], [role="tab"], div[tabindex="0"], div[class*="conversation" i], div[class*="channel" i]'
+      );
+
+      candidateRows.forEach(row => {
+        const text = (row.innerText || row.textContent || '').trim();
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        if (lines.length === 0) return;
+
+        const firstLine = lines[0];
+        // Exclude UI controls
+        if (['Chats', 'Requests', 'Threads', 'Direct', 'All', 'Message', 'Send', 'New Chat'].includes(firstLine)) return;
+        if (firstLine.length > 30) return;
+
+        // Check if row contains timestamp or chat indicator (e.g. "PM", "AM", "Yesterday", "You:")
+        const hasTimeOrSnippet = lines.some(l =>
+          l.includes('AM') || l.includes('PM') || l.includes('Yesterday') || l.includes('You:') || /^\d+[mhd]$/.test(l)
+        );
+
+        if (hasTimeOrSnippet || lines.length >= 2) {
+          const username = firstLine.replace(/^u\//, '');
+          const id = `chat_${username}`;
+          if (!seenIds.has(id)) {
+            seenIds.add(id);
+            channelItems.push({
+              id,
+              channelUrl: `/chat/user/${username}`,
+              name: username,
+              preview: lines.find(l => l.startsWith('You:') || l !== firstLine) || '',
+              time: lines.find(l => l.includes('AM') || l.includes('PM') || l.includes('Yesterday')) || '',
+              type: 'direct',
+              memberCount: 2
+            });
+          }
+        }
+      });
+
+      // 3. Scan active conversation title from pane header (e.g. "Pshyce11")
+      const headerTitle = root.querySelector(
+        'header h1, header h2, [data-testid="chat-header-title"], [class*="header" i] [class*="title" i], [class*="header" i] span'
+      );
+      if (headerTitle) {
+        const activeName = (headerTitle.innerText || headerTitle.textContent || '').trim();
+        if (activeName && !['Chats', 'Requests', 'Threads'].includes(activeName) && activeName.length < 30) {
+          const id = `chat_${activeName}`;
+          if (!seenIds.has(id)) {
+            seenIds.add(id);
+            channelItems.unshift({
+              id,
+              channelUrl: `/chat/user/${activeName}`,
+              name: activeName.replace(/^u\//, ''),
+              preview: '(Active Open Chat)',
+              time: 'Now',
+              type: 'direct',
+              memberCount: 2
+            });
+          }
+        }
       }
     });
 
@@ -102,7 +193,9 @@
    * Identifies currently open chat conversation metadata
    */
   function getActiveConversationInfo() {
-    const headerTitle = document.querySelector('header h1, [data-testid="chat-header-title"], .chat-header-name');
+    const headerTitle = document.querySelector(
+      'header h1, header h2, [data-testid="chat-header-title"], .chat-header-name, [class*="header" i] [class*="title" i]'
+    );
     return {
       title: headerTitle ? headerTitle.textContent.trim() : 'Active Chat',
       url: window.location.href
@@ -114,7 +207,7 @@
    */
   function countVisibleMessages() {
     const messages = document.querySelectorAll(
-      '[data-testid="message-content"], .message-body, [role="row"], [data-testid="chat-message"]'
+      '[data-testid="message-content"], .message-body, [role="row"], [data-testid="chat-message"], div[class*="Message"]'
     );
     return messages.length;
   }
@@ -124,26 +217,26 @@
    */
   async function scrollUpChatContainer() {
     const scrollContainer = document.querySelector(
-      '[data-testid="virtuoso-scroller"], [data-testid="message-scroller"], .messages-scroll-container'
+      '[data-testid="virtuoso-scroller"], [data-testid="message-scroller"], .messages-scroll-container, div[class*="scroller" i]'
     );
     if (scrollContainer) {
       scrollContainer.scrollTop = 0;
-      await sleep(1000);
+      await sleep(800);
     }
   }
 
   /**
    * Purges user messages in the active chat view with human-like delays
    */
-  async function executeChatPurgeLoop(maxRounds = 30) {
+  async function executeChatPurgeLoop(currentUsername = null, maxRounds = 30) {
     let totalDeleted = 0;
 
     for (let round = 0; round < maxRounds; round++) {
       if (abortPurge) break;
 
-      // Find delete buttons or 3-dots menus
+      // Find delete buttons or 3-dots menus on messages
       const actionMenus = document.querySelectorAll(
-        '[aria-label="More message options"], [aria-label="More options"], button[title="More"]'
+        '[aria-label="More message options"], [aria-label="More options"], button[title="More"], [data-testid="message-actions-trigger"]'
       );
 
       let roundDeletions = 0;
@@ -193,7 +286,7 @@
       if (roundDeletions === 0) {
         await scrollUpChatContainer();
         const remaining = countVisibleMessages();
-        if (remaining === 0) break; // Finished
+        if (remaining === 0) break;
       }
     }
 
@@ -204,9 +297,8 @@
    * Automates leaving the current conversation
    */
   async function automateLeaveCurrentChat() {
-    // Look for channel settings or leave button
     const settingsBtn = document.querySelector(
-      '[aria-label="Channel settings"], [aria-label="Conversation details"], [data-testid="chat-info-btn"]'
+      '[aria-label="Channel settings"], [aria-label="Conversation details"], [data-testid="chat-info-btn"], button[title*="Settings" i]'
     );
 
     if (settingsBtn) {
@@ -223,7 +315,6 @@
         leaveBtn.click();
         await sleep(500);
 
-        // Confirm modal if prompted
         const confirmBtn = Array.from(document.querySelectorAll('[role="dialog"] button')).find(b => {
           const t = (b.textContent || '').toLowerCase();
           return t.includes('leave') || t.includes('confirm') || t.includes('yes');
