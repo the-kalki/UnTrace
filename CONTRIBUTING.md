@@ -36,7 +36,7 @@ node tests/core.test.js
 You can preview the side panel UI locally in a browser without reloading Chrome:
 ```bash
 python3 -m http.server 3000
-# Open http://localhost:3000/test-preview.html
+# Open http://localhost:3000/tests/preview.html
 ```
 
 ---
