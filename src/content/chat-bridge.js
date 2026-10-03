@@ -187,16 +187,34 @@
       }
     });
 
-    // Strategy 3: Scan active conversation header (e.g. "Pshyce11" in the right pane)
-    const headers = queryAllAcrossRoots(
-      'header h1, header h2, [data-testid="chat-header-title"], [class*="header" i] [class*="title" i], [class*="header" i] span',
+    // Strategy 3: Scan active conversation header only within explicit chat dialog / widgets
+    const chatRoots = queryAllAcrossRoots(
+      '[data-testid="chat-container"], [role="dialog"], aside, shreddit-chat, [aria-label*="chat" i]',
       roots
     );
 
-    for (const h of headers) {
-      const text = (h.innerText || h.textContent || '').trim();
-      if (text && !['Chats', 'Requests', 'Threads', 'Messages'].includes(text) && text.length < 30) {
-        const username = text.replace(/^u\//, '');
+    const IGNORED_NAMES = new Set([
+      'chats', 'requests', 'threads', 'messages', 'direct', 'all',
+      'accessibility', 'user agreement', 'privacy policy', 'reddit rules',
+      'help', 'help center', 'content policy', 'about reddit', 'terms',
+      'settings', 'notifications', 'search', 'create'
+    ]);
+
+    for (const chatContainer of (chatRoots.length > 0 ? chatRoots : roots)) {
+      const headerEls = chatContainer.querySelectorAll(
+        '[data-testid="chat-header-title"], [data-testid="conversation-title"], .chat-header-name, header h1, header h2'
+      );
+
+      for (const h of headerEls) {
+        const text = (h.innerText || h.textContent || '').trim();
+        const lower = text.toLowerCase();
+        if (!text || IGNORED_NAMES.has(lower) || lower.includes('policy') || lower.includes('agreement') || lower.includes('rules')) continue;
+
+        const username = text.replace(/^u\//, '').trim();
+        if (!username || username.length > 24) continue;
+        // Reddit usernames must match alphanumeric + underscores/hyphens (no spaces)
+        if (!/^[a-zA-Z0-9_\-]+$/.test(username) && !text.includes('Group')) continue;
+
         const id = `chat_${username}`;
         if (!seenIds.has(id)) {
           seenIds.add(id);
@@ -206,7 +224,7 @@
             name: username,
             preview: '(Active Open Chat)',
             time: 'Now',
-            type: 'direct',
+            type: text.includes('Group') ? 'group' : 'direct',
             memberCount: 2
           });
         }

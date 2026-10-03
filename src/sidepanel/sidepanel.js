@@ -716,8 +716,14 @@ async function handleScanChat() {
     }
 
     // Default select all
-    state.discoveredPMs.forEach(pm => state.selectedChatIds.add(pm.id));
-    state.discoveredChannels.forEach(ch => state.selectedChatIds.add(ch.id || ch.channelUrl));
+    state.selectedChatIds.clear();
+    state.discoveredPMs.forEach(pm => {
+      if (pm.id) state.selectedChatIds.add(pm.id);
+    });
+    state.discoveredChannels.forEach(ch => {
+      const cid = ch.id || ch.channelUrl;
+      if (cid) state.selectedChatIds.add(cid);
+    });
 
     renderChatChannelsList();
 
@@ -859,19 +865,22 @@ function renderChatChannelsList() {
 }
 
 /**
- * Select or deselect all currently visible/filtered conversations
+ * Select or deselect all conversations
  */
 function handleSelectAllChats(selectAll) {
-  const checkboxes = el.chatChannelsList.querySelectorAll('.chat-checkbox');
-  checkboxes.forEach(cb => {
-    cb.checked = selectAll;
-    const id = cb.dataset.id;
-    if (selectAll) {
-      state.selectedChatIds.add(id);
-    } else {
-      state.selectedChatIds.delete(id);
-    }
-  });
+  if (!selectAll) {
+    state.selectedChatIds.clear();
+    const checkboxes = el.chatChannelsList.querySelectorAll('.chat-checkbox');
+    checkboxes.forEach(cb => { cb.checked = false; });
+  } else {
+    // Select all visible / filtered items
+    const checkboxes = el.chatChannelsList.querySelectorAll('.chat-checkbox');
+    checkboxes.forEach(cb => {
+      cb.checked = true;
+      const id = cb.dataset.id;
+      if (id) state.selectedChatIds.add(id);
+    });
+  }
   updateChatButtonStates();
 }
 
@@ -879,15 +888,14 @@ function handleSelectAllChats(selectAll) {
  * Smart Preset: Select only deleted / deactivated accounts
  */
 function handleSelectDeletedChats() {
+  state.selectedChatIds.clear();
   const allItems = [...state.discoveredPMs, ...state.discoveredChannels];
   let countAdded = 0;
   allItems.forEach(item => {
     const id = item.id || item.channelUrl;
-    if (isDeletedAccount(item)) {
+    if (id && isDeletedAccount(item)) {
       state.selectedChatIds.add(id);
       countAdded++;
-    } else {
-      state.selectedChatIds.delete(id);
     }
   });
   log(`CHAT: Selected ${countAdded} deleted/inactive accounts.`, countAdded > 0 ? 'cyan' : 'warn');
@@ -898,6 +906,7 @@ function handleSelectDeletedChats() {
  * Smart Preset: Select conversations older than 6 months (180 days)
  */
 function handleSelectOlderChats() {
+  state.selectedChatIds.clear();
   const allItems = [...state.discoveredPMs, ...state.discoveredChannels];
   const ONE_DAY_MS = 86400 * 1000;
   const now = Date.now();
@@ -907,11 +916,9 @@ function handleSelectOlderChats() {
     const id = item.id || item.channelUrl;
     const ts = parseChatTimestamp(item);
     const ageDays = (now - ts) / ONE_DAY_MS;
-    if (ageDays >= 180) {
+    if (id && ageDays >= 180) {
       state.selectedChatIds.add(id);
       countAdded++;
-    } else {
-      state.selectedChatIds.delete(id);
     }
   });
   log(`CHAT: Selected ${countAdded} conversations older than 6 months.`, countAdded > 0 ? 'cyan' : 'warn');
