@@ -790,6 +790,9 @@ function updateChatButtonStates() {
   const count = state.selectedChatIds.size;
   el.chatCountLabel.textContent = `${count} Selected`;
   el.btnNukeChat.disabled = count === 0 || state.isChatPurging;
+  if (!state.isChatPurging) {
+    el.btnNukeChat.textContent = count > 0 ? `🔥 Purge Chats (${count})` : '🔥 Purge Chats';
+  }
   el.btnExportChat.disabled = (state.discoveredPMs.length + state.discoveredChannels.length) === 0;
 }
 

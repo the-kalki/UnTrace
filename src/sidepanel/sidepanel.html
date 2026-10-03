@@ -247,7 +247,7 @@
           </label>
         </div>
 
-        <!-- Scan Button & Status -->
+        <!-- Scan Button -->
         <button id="btn-scan-chat" class="btn-secondary-action">
           <svg class="btn-svg-mini" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/>
@@ -256,7 +256,28 @@
           Scan Conversations
         </button>
 
-        <!-- Chat Channels Container -->
+        <!-- Scan Status & Discovery Box -->
+        <div id="chat-results" class="chat-status-box">Ready to scan chat channels.</div>
+
+        <!-- Primary Action Controls (Always accessible above the list) -->
+        <div class="chat-action-row">
+          <button id="btn-export-chat" class="btn-subtle-action" disabled title="Download backup of chats">
+            <svg class="btn-svg-mini" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Export JSON
+          </button>
+          <button id="btn-nuke-chat" class="btn-danger-action" disabled title="Permanently delete selected chats">
+            🔥 Purge Chats
+          </button>
+          <button id="btn-abort-chat" class="btn-danger-outline hidden">
+            Abort
+          </button>
+        </div>
+
+        <!-- Chat Channels Container with Scrollable View -->
         <div id="chat-channels-container" class="chat-channels-container hidden">
           <div class="chat-list-toolbar">
             <span id="chat-count-label" class="chat-count-badge">0 Found</span>
@@ -266,26 +287,6 @@
             </div>
           </div>
           <div id="chat-channels-list" class="chat-channels-list"></div>
-        </div>
-
-        <div id="chat-results" class="chat-status-box">Ready to scan chat channels.</div>
-
-        <!-- Action Controls -->
-        <div class="chat-action-row">
-          <button id="btn-export-chat" class="btn-subtle-action" disabled>
-            <svg class="btn-svg-mini" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/>
-              <line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            Export JSON
-          </button>
-          <button id="btn-nuke-chat" class="btn-danger-action" disabled>
-            🔥 Purge Chats
-          </button>
-          <button id="btn-abort-chat" class="btn-danger-outline hidden">
-            Abort
-          </button>
         </div>
       </div>
     </section>

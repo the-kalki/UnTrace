@@ -191,12 +191,15 @@ body.minimal-theme {
    2. MAIN STAGE
    ========================================================================== */
 .main-stage {
-  flex: 1;
-  padding: 12px;
+  flex: 1 1 auto;
+  min-height: 0; /* Critical for flex child to scroll within 100vh viewport */
+  padding: 12px 12px 24px 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
   overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
 /* Telemetry Strip */
@@ -671,8 +674,9 @@ body.minimal-theme {
 }
 
 .chat-channels-list {
-  max-height: 160px;
+  max-height: 180px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -737,46 +741,76 @@ body.minimal-theme {
 
 .chat-action-row {
   display: flex;
-  gap: 6px;
-  margin-top: 4px;
+  gap: 8px;
+  margin-top: 6px;
+  margin-bottom: 2px;
 }
 
 .btn-subtle-action {
   flex: 1;
-  height: 28px;
+  height: 32px;
   background-color: var(--bg-surface-elevated);
   border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
+  color: var(--text-main);
   border-radius: var(--radius-sm);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 6px;
   transition: all 0.15s ease;
 }
 .btn-subtle-action:hover:not(:disabled) {
   background-color: var(--bg-surface-active);
-  color: var(--text-main);
-  border-color: var(--border-focus);
+  color: var(--accent-cyan);
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 8px rgba(0, 210, 255, 0.2);
 }
 .btn-subtle-action:disabled {
-  opacity: 0.5;
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-danger-action {
+  flex: 1;
+  height: 32px;
+  background-color: var(--accent-danger);
+  border: 1px solid transparent;
+  color: #FFFFFF;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+.btn-danger-action:hover:not(:disabled) {
+  background-color: var(--accent-danger-hover);
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+}
+.btn-danger-action:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
 .btn-danger-outline {
   flex: 1;
-  height: 28px;
+  height: 32px;
   background-color: transparent;
   border: 1px solid var(--accent-danger);
   color: var(--accent-danger);
   border-radius: var(--radius-sm);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: all 0.15s ease;
 }
 .btn-danger-outline:hover {
