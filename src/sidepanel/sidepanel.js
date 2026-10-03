@@ -94,6 +94,7 @@ const el = {
   terminalBody: document.getElementById('terminal-body'),
   terminalFeed: document.getElementById('terminal-feed'),
   logStatusPeek: document.getElementById('log-status-peek'),
+  btnCopyLogs: document.getElementById('btn-copy-logs'),
   btnClearLogs: document.getElementById('btn-clear-logs'),
   btnDockToggle: document.getElementById('btn-dock-toggle'),
   dockChevron: document.getElementById('dock-chevron'),
@@ -232,6 +233,22 @@ function setupDrawers() {
     if (e.target.closest('#btn-clear-logs')) return;
     toggleTerminal();
   });
+
+  if (el.btnCopyLogs) {
+    el.btnCopyLogs.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const logs = Array.from(el.terminalFeed.children)
+        .map(entry => entry.textContent.trim())
+        .join('\n');
+      navigator.clipboard.writeText(logs).then(() => {
+        const prev = el.btnCopyLogs.textContent;
+        el.btnCopyLogs.textContent = 'Copied!';
+        setTimeout(() => { el.btnCopyLogs.textContent = prev; }, 1500);
+      }).catch(err => {
+        console.error('Failed to copy logs:', err);
+      });
+    });
+  }
 
   el.btnClearLogs.addEventListener('click', (e) => {
     e.stopPropagation();
