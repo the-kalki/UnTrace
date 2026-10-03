@@ -76,6 +76,18 @@ export class AdaptiveRateLimiter {
     this.currentBackoffSeconds = 0;
   }
 
+  recordSuccess() {
+    this.resetBackoff();
+  }
+
+  async throttle(signal = null) {
+    return await this.waitPace(signal);
+  }
+
+  async handle429(suggestedSeconds = null, signal = null) {
+    return await this.triggerBackoff(suggestedSeconds, signal);
+  }
+
   /**
    * Sleep helper with AbortSignal support
    */

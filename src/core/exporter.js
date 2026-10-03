@@ -1,6 +1,6 @@
 /**
- * Bulk Reddit Nuke & Privacy Cleaner - Pre-Nuke Data Exporter
- * Generates structured JSON and CSV backup archives
+ * UnTrace - Pre-Nuke Data Exporter
+ * Generates structured JSON backup archives for posts, comments, and private chats
  */
 
 export class HistoryExporter {
@@ -41,16 +41,55 @@ export class HistoryExporter {
   }
 
   /**
+   * Compiles chat channels and direct messages into a clean JSON archive
+   */
+  static compileChatBackup(username, pms = [], channels = []) {
+    return {
+      exportedAt: new Date().toISOString(),
+      username: username || 'reddit_user',
+      metadata: {
+        totalPMs: pms.length,
+        totalChannels: channels.length,
+        totalItems: pms.length + channels.length,
+        version: '1.0.0'
+      },
+      directMessages: pms.map(pm => ({
+        id: pm.id,
+        author: pm.author,
+        recipient: pm.recipient,
+        subject: pm.subject,
+        body: pm.body,
+        createdUtc: pm.createdUtc,
+        createdAt: pm.createdUtc ? new Date(pm.createdUtc * 1000).toISOString() : null,
+        isAuthor: pm.isAuthor
+      })),
+      chatChannels: channels.map(ch => ({
+        id: ch.id,
+        name: ch.name,
+        type: ch.type || 'direct',
+        memberCount: ch.memberCount || 2,
+        lastMessageAt: ch.lastMessageAt || null,
+        lastAuthor: ch.lastAuthor || null
+      }))
+    };
+  }
+
+  /**
    * Triggers client-side browser download for JSON archive
    */
   static downloadJson(backupData, filename = null) {
+    if (typeof window === 'undefined' || !document || !document.createElement) {
+      return filename || 'backup.json';
+    }
+
     const jsonString = JSON.stringify(backupData, null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
 
-    const safeUsername = backupData.username.replace(/[^a-zA-Z0-9_-]/g, '');
+    const rawUsername = backupData.username || 'user';
+    const safeUsername = rawUsername.replace(/[^a-zA-Z0-9_-]/g, '');
     const timestamp = Math.floor(Date.now() / 1000);
-    const finalFilename = filename || `reddit_backup_${safeUsername}_${timestamp}.json`;
+    const finalFilename = filename || `untrace_reddit_backup_${safeUsername}_${timestamp}.json`;
 
     const a = document.createElement('a');
     a.href = url;

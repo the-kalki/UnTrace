@@ -7,7 +7,7 @@
     "dev": "python3 -m http.server 3000",
     "start": "python3 -m http.server 3000",
     "lint": "echo 'No lint errors found.'",
-    "test": "node tests/core.test.js"
+    "test": "node tests/core.test.js && node tests/chat.test.js"
   },
   "keywords": [
     "reddit",

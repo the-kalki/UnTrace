@@ -115,6 +115,13 @@
       return true; // Keep channel open
     }
 
+    if (message.type === 'EXTRACT_CHAT_AUTH') {
+      harvestChatAuth()
+        .then((chatAuth) => sendResponse({ success: true, chatAuth }))
+        .catch((err) => sendResponse({ success: false, error: err.message }));
+      return true;
+    }
+
     if (message.type === 'EXECUTE_PAGE_FETCH') {
       const { url, options } = message.payload;
       fetch(url, { ...options, credentials: 'include' })
@@ -136,4 +143,44 @@
       return true;
     }
   });
+
+  /**
+   * Harvests chat-specific tokens (Bearer token, Sendbird session, Matrix tokens)
+   */
+  async function harvestChatAuth() {
+    let chatToken = null;
+    let sendbirdToken = null;
+
+    try {
+      // Check localStorage for token keys used by Reddit Chat / SendBird
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        const lowerKey = key.toLowerCase();
+        if (lowerKey.includes('chat_token') || lowerKey === 'token' || lowerKey.includes('sendbird') || lowerKey.includes('matrix')) {
+          const val = localStorage.getItem(key);
+          if (val && !chatToken && val.length > 20) {
+            chatToken = val;
+          }
+          if (val && lowerKey.includes('sendbird')) {
+            sendbirdToken = val;
+          }
+        }
+      }
+    } catch (_) {}
+
+    const chatAuth = {
+      chatToken,
+      sendbirdToken,
+      url: window.location.href,
+      isChatTab: window.location.pathname.startsWith('/chat'),
+      timestamp: Date.now()
+    };
+
+    try {
+      await chrome.storage.local.set({ redditChatAuth: chatAuth });
+    } catch (_) {}
+
+    return chatAuth;
+  }
 })();

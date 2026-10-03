@@ -218,24 +218,75 @@
       </div>
     </section>
 
-    <!-- Slide-over / Expandable Chat Cleaner Drawer (Beta) -->
+    <!-- Slide-over / Expandable Chat Cleaner Drawer -->
     <section class="drawer-card hidden" id="drawer-chat">
       <div class="drawer-header" id="toggle-chat-drawer">
         <div class="drawer-title-group">
           <svg class="drawer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
           </svg>
-          <span class="drawer-heading">Reddit Chat Cleaner</span>
-          <span class="badge-beta">BETA</span>
+          <span class="drawer-heading">Direct Messages & Chats</span>
+          <span class="badge-beta">ACTIVE</span>
         </div>
-        <button id="btn-close-chat-drawer" class="btn-mini-close">✕</button>
+        <button id="btn-close-chat-drawer" class="btn-mini-close" title="Close">✕</button>
       </div>
       <div class="drawer-body">
         <p class="chat-info-text">
-          Purge one-on-one direct messages and conversations directly via Reddit's chat mutations.
+          Bulk-wipe 1-on-1 conversations, group channels, and legacy PMs with anti-archive shredding.
         </p>
-        <button id="btn-scan-chat" class="btn-secondary-action">Connect & Scan Chat</button>
+
+        <!-- Scope Toggles -->
+        <div class="checkbox-row-dual" style="margin-bottom: 8px;">
+          <label class="mini-checkbox">
+            <input type="checkbox" id="chat-opt-pms" checked>
+            <span>Legacy PMs</span>
+          </label>
+          <label class="mini-checkbox">
+            <input type="checkbox" id="chat-opt-modern" checked>
+            <span>Modern Chat</span>
+          </label>
+        </div>
+
+        <!-- Scan Button & Status -->
+        <button id="btn-scan-chat" class="btn-secondary-action">
+          <svg class="btn-svg-mini" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          Scan Conversations
+        </button>
+
+        <!-- Chat Channels Container -->
+        <div id="chat-channels-container" class="chat-channels-container hidden">
+          <div class="chat-list-toolbar">
+            <span id="chat-count-label" class="chat-count-badge">0 Found</span>
+            <div class="chat-toolbar-actions">
+              <button id="btn-select-all-chats" class="btn-link-action">All</button>
+              <button id="btn-deselect-all-chats" class="btn-link-action">None</button>
+            </div>
+          </div>
+          <div id="chat-channels-list" class="chat-channels-list"></div>
+        </div>
+
         <div id="chat-results" class="chat-status-box">Ready to scan chat channels.</div>
+
+        <!-- Action Controls -->
+        <div class="chat-action-row">
+          <button id="btn-export-chat" class="btn-subtle-action" disabled>
+            <svg class="btn-svg-mini" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Export JSON
+          </button>
+          <button id="btn-nuke-chat" class="btn-danger-action" disabled>
+            🔥 Purge Chats
+          </button>
+          <button id="btn-abort-chat" class="btn-danger-outline hidden">
+            Abort
+          </button>
+        </div>
       </div>
     </section>
 

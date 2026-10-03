@@ -23,6 +23,10 @@ const state = {
   harvestedComments: [],
   harvestedPosts: [],
   targetItems: [],
+  discoveredPMs: [],
+  discoveredChannels: [],
+  selectedChatIds: new Set(),
+  isChatPurging: false,
   abortController: null,
   isRunning: false,
   isPaused: false,
@@ -74,6 +78,16 @@ const el = {
   btnCloseChatDrawer: document.getElementById('btn-close-chat-drawer'),
   btnScanChat: document.getElementById('btn-scan-chat'),
   chatResults: document.getElementById('chat-results'),
+  chatOptPms: document.getElementById('chat-opt-pms'),
+  chatOptModern: document.getElementById('chat-opt-modern'),
+  chatChannelsContainer: document.getElementById('chat-channels-container'),
+  chatCountLabel: document.getElementById('chat-count-label'),
+  btnSelectAllChats: document.getElementById('btn-select-all-chats'),
+  btnDeselectAllChats: document.getElementById('btn-deselect-all-chats'),
+  chatChannelsList: document.getElementById('chat-channels-list'),
+  btnExportChat: document.getElementById('btn-export-chat'),
+  btnNukeChat: document.getElementById('btn-nuke-chat'),
+  btnAbortChat: document.getElementById('btn-abort-chat'),
 
   // Precision Terminal Dock
   terminalBarToggle: document.getElementById('terminal-bar-toggle'),
@@ -525,35 +539,223 @@ function handleAbort() {
 }
 
 /**
- * Experimental Chat Scanner
+ * Chat & DM Scanner
  */
 async function handleScanChat() {
+  const scanPMs = el.chatOptPms ? el.chatOptPms.checked : true;
+  const scanModern = el.chatOptModern ? el.chatOptModern.checked : true;
+
+  if (!scanPMs && !scanModern) {
+    el.chatResults.innerHTML = '<span style="color: var(--accent-amber);">⚠️ Select at least one source (Legacy PMs or Modern Chat).</span>';
+    return;
+  }
+
   el.btnScanChat.disabled = true;
-  el.chatResults.innerHTML = '<span class="muted-text">Connecting to Reddit Chat GraphQL...</span>';
+  el.chatResults.innerHTML = '<span class="muted-text">Scanning Reddit messages and chat conversations...</span>';
+  log('CHAT: Initiating conversation scan...', 'cyan');
 
   try {
-    log('CHAT: Querying Reddit Chat GraphQL...', 'cyan');
-    const data = await state.chatCleaner.fetchConversations();
-    el.chatResults.innerHTML = `
-      <div style="color: var(--accent-emerald); font-weight: 600;">✓ Connected to Reddit GraphQL identity</div>
-      <p style="margin-top: 4px; color: var(--text-secondary); font-size: 10px;">
-        Identity: ${data.identity?.id || 'Active'}<br>
-        Direct Chat channels ready for message purge.
-      </p>
-    `;
-    log('CHAT: GraphQL connection established successfully.', 'success');
+    state.discoveredPMs = [];
+    state.discoveredChannels = [];
+    state.selectedChatIds.clear();
+
+    if (scanPMs) {
+      log('CHAT: Querying legacy private messages (/message/messages)...', 'info');
+      state.discoveredPMs = await state.chatCleaner.fetchLegacyPMs(100);
+      log(`CHAT: Found ${state.discoveredPMs.length} legacy private messages.`, 'success');
+    }
+
+    if (scanModern) {
+      log('CHAT: Querying modern chat channels via GraphQL...', 'info');
+      state.discoveredChannels = await state.chatCleaner.fetchModernChannels();
+      log(`CHAT: Found ${state.discoveredChannels.length} modern chat channels.`, 'success');
+    }
+
+    // Default select all
+    state.discoveredPMs.forEach(pm => state.selectedChatIds.add(pm.id));
+    state.discoveredChannels.forEach(ch => state.selectedChatIds.add(ch.id || ch.channelUrl));
+
+    renderChatChannelsList();
+
+    const totalFound = state.discoveredPMs.length + state.discoveredChannels.length;
+    if (totalFound > 0) {
+      el.chatResults.innerHTML = `<span style="color: var(--accent-emerald);">✓ Discovered ${totalFound} total conversations/messages.</span>`;
+      el.btnExportChat.disabled = false;
+      el.btnNukeChat.disabled = false;
+    } else {
+      el.chatResults.innerHTML = '<span class="muted-text">No active messages or chat channels found.</span>';
+      el.btnExportChat.disabled = true;
+      el.btnNukeChat.disabled = true;
+    }
   } catch (err) {
-    el.chatResults.innerHTML = `
-      <div style="color: var(--accent-amber);">⚠️ Reddit Chat Note:</div>
-      <p style="margin-top: 2px; color: var(--text-secondary); font-size: 10px;">
-        ${err.message}<br>
-        Tip: Open <code>reddit.com/chat</code> in an active tab to synchronize tokens.
-      </p>
-    `;
-    log(`CHAT: ${err.message}`, 'warn');
+    el.chatResults.innerHTML = `<span style="color: var(--accent-danger);">⚠️ Scan error: ${err.message}</span>`;
+    log(`CHAT ERROR: ${err.message}`, 'error');
   } finally {
     el.btnScanChat.disabled = false;
   }
+}
+
+/**
+ * Renders discovered chats in the sidepanel drawer
+ */
+function renderChatChannelsList() {
+  const container = el.chatChannelsContainer;
+  const list = el.chatChannelsList;
+  if (!container || !list) return;
+
+  const total = state.discoveredPMs.length + state.discoveredChannels.length;
+  el.chatCountLabel.textContent = `${total} Found`;
+
+  if (total === 0) {
+    container.classList.add('hidden');
+    list.innerHTML = '';
+    return;
+  }
+
+  container.classList.remove('hidden');
+  let html = '';
+
+  // Render PMs
+  state.discoveredPMs.forEach(pm => {
+    const isChecked = state.selectedChatIds.has(pm.id) ? 'checked' : '';
+    const dateStr = pm.createdUtc ? new Date(pm.createdUtc * 1000).toLocaleDateString() : '';
+    html += `
+      <div class="chat-item-card" data-id="${pm.id}">
+        <input type="checkbox" class="chat-checkbox" data-id="${pm.id}" ${isChecked}>
+        <div class="chat-item-details">
+          <div class="chat-item-title">
+            <span style="color: var(--accent-cyan); font-size: 9px; font-weight: 700;">[PM]</span>
+            ${escapeHtml(pm.author || 'User')} → ${escapeHtml(pm.recipient || 'Me')}: ${escapeHtml(pm.subject || '')}
+          </div>
+          <div class="chat-item-meta">${dateStr} • ${escapeHtml(pm.body.slice(0, 32))}...</div>
+        </div>
+      </div>
+    `;
+  });
+
+  // Render Modern Channels
+  state.discoveredChannels.forEach(ch => {
+    const cid = ch.id || ch.channelUrl;
+    const isChecked = state.selectedChatIds.has(cid) ? 'checked' : '';
+    html += `
+      <div class="chat-item-card" data-id="${cid}">
+        <input type="checkbox" class="chat-checkbox" data-id="${cid}" ${isChecked}>
+        <div class="chat-item-details">
+          <div class="chat-item-title">
+            <span style="color: var(--accent-ember); font-size: 9px; font-weight: 700;">[CHAT]</span>
+            ${escapeHtml(ch.name || 'Conversation')}
+          </div>
+          <div class="chat-item-meta">${ch.type.toUpperCase()} • ${ch.memberCount || 2} members</div>
+        </div>
+      </div>
+    `;
+  });
+
+  list.innerHTML = html;
+
+  // Bind item checkbox listeners
+  list.querySelectorAll('.chat-checkbox').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const id = e.target.dataset.id;
+      if (e.target.checked) {
+        state.selectedChatIds.add(id);
+      } else {
+        state.selectedChatIds.delete(id);
+      }
+      updateChatButtonStates();
+    });
+  });
+
+  updateChatButtonStates();
+}
+
+function handleSelectAllChats(selectAll) {
+  const checkboxes = el.chatChannelsList.querySelectorAll('.chat-checkbox');
+  checkboxes.forEach(cb => {
+    cb.checked = selectAll;
+    const id = cb.dataset.id;
+    if (selectAll) {
+      state.selectedChatIds.add(id);
+    } else {
+      state.selectedChatIds.delete(id);
+    }
+  });
+  updateChatButtonStates();
+}
+
+function updateChatButtonStates() {
+  const count = state.selectedChatIds.size;
+  el.chatCountLabel.textContent = `${count} Selected`;
+  el.btnNukeChat.disabled = count === 0 || state.isChatPurging;
+  el.btnExportChat.disabled = (state.discoveredPMs.length + state.discoveredChannels.length) === 0;
+}
+
+/**
+ * Exports pre-nuke chat backup JSON
+ */
+function handleExportChat() {
+  const username = state.session?.username || 'reddit_user';
+  const backup = HistoryExporter.compileChatBackup(username, state.discoveredPMs, state.discoveredChannels);
+  HistoryExporter.downloadJson(backup, `untrace_reddit_chats_${username}_${Date.now()}.json`);
+  log('BACKUP: Chat transcript backup saved locally.', 'success');
+}
+
+/**
+ * Executes chat purge sequence
+ */
+async function handleNukeChats() {
+  if (state.selectedChatIds.size === 0) return;
+
+  const count = state.selectedChatIds.size;
+  const confirmed = window.confirm(`Permanently purge ${count} selected chats/messages? This cannot be undone.`);
+  if (!confirmed) return;
+
+  state.isChatPurging = true;
+  el.btnNukeChat.disabled = true;
+  el.btnScanChat.disabled = true;
+  el.btnAbortChat.classList.remove('hidden');
+
+  log(`CHAT NUKE: Starting purge of ${count} items...`, 'warn');
+
+  try {
+    const stats = await state.chatCleaner.nukeChats(
+      {
+        deletePMs: el.chatOptPms ? el.chatOptPms.checked : true,
+        deleteModern: el.chatOptModern ? el.chatOptModern.checked : true,
+        selectedChannelIds: Array.from(state.selectedChatIds)
+      },
+      (progress) => {
+        if (progress.message) {
+          log(`CHAT: ${progress.message}`, progress.stage === 'ERROR' ? 'error' : 'cyan');
+        }
+      }
+    );
+
+    log(`CHAT NUKE FINISHED: Deleted ${stats.pmsDeleted} PMs, Left ${stats.channelsLeft} Channels, Errors: ${stats.errors}`, 'success');
+    el.chatResults.innerHTML = `<span style="color: var(--accent-emerald);">✓ Purge completed! Deleted ${stats.pmsDeleted} PMs, cleared ${stats.channelsLeft} channels.</span>`;
+  } catch (err) {
+    log(`CHAT NUKE ERROR: ${err.message}`, 'error');
+    el.chatResults.innerHTML = `<span style="color: var(--accent-danger);">⚠️ Error during chat nuke: ${err.message}</span>`;
+  } finally {
+    state.isChatPurging = false;
+    el.btnNukeChat.disabled = false;
+    el.btnScanChat.disabled = false;
+    el.btnAbortChat.classList.add('hidden');
+    // Refresh list
+    await handleScanChat();
+  }
+}
+
+function handleAbortChat() {
+  if (state.chatCleaner) {
+    state.chatCleaner.abort();
+    log('CHAT: Abort signal sent to chat engine.', 'warn');
+  }
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 /**
@@ -569,7 +771,13 @@ function bindEvents() {
   el.btnResume.addEventListener('click', handleResume);
   el.btnAbort.addEventListener('click', handleAbort);
 
+  // Chat Drawer events
   el.btnScanChat.addEventListener('click', handleScanChat);
+  el.btnSelectAllChats.addEventListener('click', () => handleSelectAllChats(true));
+  el.btnDeselectAllChats.addEventListener('click', () => handleSelectAllChats(false));
+  el.btnExportChat.addEventListener('click', handleExportChat);
+  el.btnNukeChat.addEventListener('click', handleNukeChats);
+  el.btnAbortChat.addEventListener('click', handleAbortChat);
 
   // Modal events
   el.modalConfirmCheckbox.addEventListener('change', (e) => {

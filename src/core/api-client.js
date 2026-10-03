@@ -15,6 +15,72 @@ export class RedditApiClient {
     this.modhash = modhash;
   }
 
+  setChatToken(token) {
+    this.chatToken = token;
+  }
+
+  getChatToken() {
+    return this.chatToken || null;
+  }
+
+  /**
+   * Fetches user private messages / direct messages
+   */
+  async fetchDirectMessages(limit = 100, after = null) {
+    let url = `${this.baseUrl}/message/messages.json?limit=${limit}`;
+    if (after) url += `&after=${after}`;
+
+    const res = await fetch(url, {
+      method: 'GET',
+      credentials: 'include',
+      headers: {
+        'Accept': 'application/json',
+        'X-Modhash': this.modhash || ''
+      }
+    });
+
+    if (!res.ok) {
+      if (res.status === 429) {
+        throw new RateLimitError('Rate limit exceeded (HTTP 429)', res.headers.get('Retry-After'));
+      }
+      throw new Error(`Failed to fetch messages: HTTP ${res.status}`);
+    }
+
+    return await res.json();
+  }
+
+  /**
+   * Deletes a legacy direct message / PM
+   * @param {string} fullname ID of message (e.g. t4_xxxx)
+   */
+  async deleteDirectMessage(fullname) {
+    const url = `${this.baseUrl}/api/del_msg`;
+    const params = new URLSearchParams({
+      id: fullname,
+      uh: this.modhash
+    });
+
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Modhash': this.modhash,
+        'Accept': 'application/json'
+      },
+      body: params.toString()
+    });
+
+    if (!res.ok) {
+      if (res.status === 429) {
+        throw new RateLimitError('Rate limit exceeded (HTTP 429)', res.headers.get('Retry-After'));
+      }
+      throw new Error(`Delete direct message failed: HTTP ${res.status}`);
+    }
+
+    return true;
+  }
+
   /**
    * Fetches current authenticated user details and modhash
    */
