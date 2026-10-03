@@ -556,6 +556,31 @@ function handleAbort() {
 }
 
 /**
+ * Finds the active or open Reddit tab across browser windows
+ */
+async function getTargetRedditTab() {
+  // 1. Try active tab in current window
+  const currentTabs = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+  if (currentTabs.length > 0 && currentTabs[0].url && currentTabs[0].url.includes('reddit.com')) {
+    return currentTabs[0];
+  }
+
+  // 2. Try active tab in last focused window
+  const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+  if (activeTabs.length > 0 && activeTabs[0].url && activeTabs[0].url.includes('reddit.com')) {
+    return activeTabs[0];
+  }
+
+  // 3. Fallback: Find ANY open tab with reddit.com
+  const allRedditTabs = await chrome.tabs.query({ url: '*://*.reddit.com/*' }).catch(() => []);
+  if (allRedditTabs.length > 0) {
+    return allRedditTabs[0];
+  }
+
+  return null;
+}
+
+/**
  * Chat & DM Scanner
  */
 async function handleScanChat() {
@@ -580,37 +605,52 @@ async function handleScanChat() {
     if (scanModern) {
       log('CHAT: Querying active Reddit tab DOM...', 'info');
       try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tab && tab.id && tab.url && tab.url.includes('reddit.com')) {
+        const tab = await getTargetRedditTab();
+        if (tab && tab.id) {
+          log(`CHAT: Found Reddit tab #${tab.id} (${tab.title ? tab.title.slice(0, 24) : 'Reddit'})...`, 'info');
           let domResponse = null;
           try {
             domResponse = await chrome.tabs.sendMessage(tab.id, { type: 'SCAN_CHAT_DOM' });
           } catch (connErr) {
-            // If content script was not yet injected (e.g. extension reloaded without tab refresh), inject dynamically
+            log('CHAT: Injecting bridge into active tab...', 'info');
             if (chrome.scripting) {
               try {
                 await chrome.scripting.executeScript({
-                  target: { tabId: tab.id },
+                  target: { tabId: tab.id, allFrames: true },
                   files: ['src/content/content-script.js', 'src/content/chat-bridge.js']
                 });
                 await new Promise(r => setTimeout(r, 400));
                 domResponse = await chrome.tabs.sendMessage(tab.id, { type: 'SCAN_CHAT_DOM' });
-              } catch (_) {}
+              } catch (injErr) {
+                log(`CHAT: Injection notice: ${injErr.message}`, 'warn');
+              }
             }
           }
 
-          if (domResponse && domResponse.channels && domResponse.channels.length > 0) {
-            state.discoveredChannels = domResponse.channels;
-            log(`CHAT: Discovered ${domResponse.channels.length} conversations in active Reddit tab!`, 'success');
+          if (domResponse) {
+            const numFound = domResponse.channels ? domResponse.channels.length : 0;
+            log(`CHAT: Tab bridge replied: isChatOpen=${domResponse.isChatOpen}, channelsFound=${numFound}`, 'info');
+
+            if (numFound > 0) {
+              state.discoveredChannels = domResponse.channels;
+              log(`CHAT: Discovered ${numFound} conversations in active Reddit tab!`, 'success');
+            } else if (!domResponse.isChatOpen) {
+              log('CHAT: Chat dock not detected. Click the Chat icon on Reddit to open it.', 'warn');
+            } else {
+              log('CHAT: Chat dock is open, but 0 conversations matched. Click a conversation or open reddit.com/chat', 'warn');
+            }
+          } else {
+            log('CHAT: No response from tab. Please refresh your Reddit tab (F5).', 'warn');
           }
+        } else {
+          log('CHAT: No open reddit.com tab found in browser window.', 'warn');
         }
       } catch (tabErr) {
-        console.warn('[SidePanel] Active tab scan warning:', tabErr.message);
+        log(`CHAT TAB ERROR: ${tabErr.message}`, 'error');
       }
 
-      // If tab DOM didn't return channels, attempt GraphQL / REST fallback
+      // If tab DOM didn't return channels, attempt fallback
       if (state.discoveredChannels.length === 0) {
-        log('CHAT: Trying GraphQL chat fallback...', 'info');
         const gqlChannels = await state.chatCleaner.fetchModernChannels();
         if (gqlChannels.length > 0) {
           state.discoveredChannels = gqlChannels;

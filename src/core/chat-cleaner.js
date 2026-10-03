@@ -135,8 +135,7 @@ export class RedditChatCleaner {
         };
       });
     } catch (err) {
-      console.warn('[ChatCleaner] Failed to query GraphQL chat channels:', err.message);
-      // Return empty channels array rather than throwing so caller can inspect
+      // GraphQL direct chat query is proprietary/restricted; DOM bridge in active tab handles extraction
       return [];
     }
   }
