@@ -3,7 +3,7 @@
  */
 
 import assert from 'node:assert';
-import { RedditChatCleaner, parseChatTimestamp, isDeletedAccount, filterChatItems } from '../src/core/chat-cleaner.js';
+import { RedditChatCleaner, parseChatTimestamp, isDeletedAccount, filterChatItems, isValidConversationName } from '../src/core/chat-cleaner.js';
 import { HistoryExporter } from '../src/core/exporter.js';
 import { AdaptiveRateLimiter } from '../src/core/rate-limiter.js';
 
@@ -65,10 +65,43 @@ console.log('🧪 Starting Chat & DM Deletion Test Suite...');
   assert.strictEqual(pms.length, 2);
   assert.strictEqual(pms[0].id, 't4_msg1');
   assert.strictEqual(pms[0].author, 'friend_user');
+  assert.strictEqual(pms[0].name, 'friend_user');
   assert.strictEqual(pms[0].isAuthor, false);
   assert.strictEqual(pms[1].id, 't4_msg2');
+  assert.strictEqual(pms[1].name, 'friend_user');
   assert.strictEqual(pms[1].isAuthor, true);
-  console.log('✅ Legacy PM normalization tests passed.');
+
+  // Test pagination across multiple pages
+  let callCount = 0;
+  const paginatedApi = {
+    username: 'test_user',
+    modhash: 'modhash_123',
+    fetchDirectMessages: async (limit, after) => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          data: {
+            children: [{ data: { name: 't4_p1', author: 'user1', dest: 'test_user', body: 'page 1' } }],
+            after: 't4_p1'
+          }
+        };
+      }
+      return {
+        data: {
+          children: [{ data: { name: 't4_p2', author: 'user2', dest: 'test_user', body: 'page 2' } }],
+          after: null
+        }
+      };
+    }
+  };
+  const paginatedCleaner = new RedditChatCleaner(paginatedApi);
+  const allPMs = await paginatedCleaner.fetchLegacyPMs(100);
+  assert.strictEqual(allPMs.length, 2);
+  assert.strictEqual(allPMs[0].id, 't4_p1');
+  assert.strictEqual(allPMs[1].id, 't4_p2');
+  assert.strictEqual(callCount, 2);
+
+  console.log('✅ Legacy PM normalization and multi-page pagination tests passed.');
 }
 
 // 3. Test Chat Backup JSON Compilation
@@ -244,10 +277,39 @@ console.log('🧪 Starting Chat & DM Deletion Test Suite...');
     }
   ];
 
+  // Test parseChatTimestamp with various relative strings
+  const ts2y = parseChatTimestamp({ time: '2y ago' });
+  const age2y = (now - ts2y) / ONE_DAY_MS;
+  assert(age2y >= 700 && age2y <= 740, `Expected ~730 days, got ${age2y}`);
+
+  const ts6mo = parseChatTimestamp({ time: '6 mo. ago' });
+  const age6mo = (now - ts6mo) / ONE_DAY_MS;
+  assert(age6mo >= 170 && age6mo <= 190, `Expected ~180 days, got ${age6mo}`);
+
+  const ts3w = parseChatTimestamp({ time: '3w ago' });
+  const age3w = (now - ts3w) / ONE_DAY_MS;
+  assert(age3w >= 20 && age3w <= 22, `Expected ~21 days, got ${age3w}`);
+
+  const ts5d = parseChatTimestamp({ time: '5 d. ago' });
+  const age5d = (now - ts5d) / ONE_DAY_MS;
+  assert(age5d >= 4.9 && age5d <= 5.1, `Expected ~5 days, got ${age5d}`);
+
   // Test isDeletedAccount
   assert.strictEqual(isDeletedAccount(mockItems[2]), true);
   assert.strictEqual(isDeletedAccount(mockItems[3]), true); // author 'ghost'
   assert.strictEqual(isDeletedAccount(mockItems[0]), false);
+
+  // Test that normal legacy PM is NOT considered deleted
+  const normalPM = {
+    id: 't4_abc',
+    name: 'friendly_user',
+    author: 'friendly_user',
+    recipient: 'me',
+    subject: 'Hello',
+    body: 'How are you?',
+    type: 'pm'
+  };
+  assert.strictEqual(isDeletedAccount(normalPM), false);
 
   // Test Search filter
   const searchResults = filterChatItems(mockItems, { search: 'Crypto' });
@@ -258,11 +320,29 @@ console.log('🧪 Starting Chat & DM Deletion Test Suite...');
   const older180d = filterChatItems(mockItems, { dateRange: '180d' });
   assert.strictEqual(older180d.length, 2); // old_trader (200d) and pm_legacy_1 (400d)
 
+  // Test Date filter: older than 7 days (> 7 Days Old)
+  const item8d = { id: 'ch_8d', name: 'user_8d', time: '8 d. ago', type: 'direct' };
+  const item2d = { id: 'ch_2d', name: 'user_2d', time: '2 d. ago', type: 'direct' };
+  const filtered7d = filterChatItems([item8d, item2d], { dateRange: '7d' });
+  assert.strictEqual(filtered7d.length, 1);
+  assert.strictEqual(filtered7d[0].id, 'ch_8d');
+
+  // Test Date filter on relative time strings: "6 mo. ago" item
+  const itemWithRelTime = { id: 'ch_rel', name: 'rel_user', time: '6 mo. ago', type: 'direct' };
+  const filteredRel = filterChatItems([itemWithRelTime, mockItems[0]], { dateRange: '90d' });
+  assert.strictEqual(filteredRel.length, 1);
+  assert.strictEqual(filteredRel[0].id, 'ch_rel');
+
   // Test Account Status filter: deleted accounts only
   const deletedOnly = filterChatItems(mockItems, { accountStatus: 'deleted' });
   assert.strictEqual(deletedOnly.length, 2);
   assert(deletedOnly.some(i => i.id === 'ch_deleted_user'));
   assert(deletedOnly.some(i => i.id === 'pm_legacy_1'));
+
+  // Test Account Status filter: active accounts only
+  const activeOnly = filterChatItems([...mockItems, normalPM], { accountStatus: 'active' });
+  assert.strictEqual(activeOnly.length, 4); // mockItems[0], mockItems[1], mockItems[4], normalPM
+  assert(activeOnly.some(i => i.id === 't4_abc'));
 
   // Test Channel Type filter: group only
   const groupsOnly = filterChatItems(mockItems, { channelType: 'group' });
@@ -275,6 +355,46 @@ console.log('🧪 Starting Chat & DM Deletion Test Suite...');
   assert.strictEqual(pmsOnly[0].id, 'pm_legacy_1');
 
   console.log('✅ Selective Privacy Clean-up filter engine tests passed.');
+}
+
+// 7. Test isValidConversationName validator (Filtering out subreddits, comment counters, timestamps, buttons)
+{
+  // Should reject subreddits
+  assert.strictEqual(isValidConversationName('r/memes'), false);
+  assert.strictEqual(isValidConversationName('r/DesiSexTalk'), false);
+  assert.strictEqual(isValidConversationName('u/r/BiharMedicos'), false);
+  assert.strictEqual(isValidConversationName('r/GurgaonGoingWild'), false);
+
+  // Should reject post comment count buttons
+  assert.strictEqual(isValidConversationName('33 comments'), false);
+  assert.strictEqual(isValidConversationName('8 comments'), false);
+  assert.strictEqual(isValidConversationName('16 comments'), false);
+  assert.strictEqual(isValidConversationName('27 comments'), false);
+  assert.strictEqual(isValidConversationName('1 comment'), false);
+
+  // Should reject video player timestamps
+  assert.strictEqual(isValidConversationName('0:10'), false);
+  assert.strictEqual(isValidConversationName('1:23'), false);
+  assert.strictEqual(isValidConversationName('10:45'), false);
+
+  // Should reject UI controls & buttons
+  assert.strictEqual(isValidConversationName('Reddit Pro'), false);
+  assert.strictEqual(isValidConversationName('Share'), false);
+  assert.strictEqual(isValidConversationName('Chats'), false);
+  assert.strictEqual(isValidConversationName('Settings'), false);
+  assert.strictEqual(isValidConversationName('Home'), false);
+  assert.strictEqual(isValidConversationName('Explore'), false);
+  assert.strictEqual(isValidConversationName('Delete my messages'), false);
+
+  // Should accept valid chat usernames
+  assert.strictEqual(isValidConversationName('Pshyce11'), true);
+  assert.strictEqual(isValidConversationName('Akki512bakki'), true);
+  assert.strictEqual(isValidConversationName('Informal_Teach7014'), true);
+  assert.strictEqual(isValidConversationName('Appropriate_Bass_454'), true);
+  assert.strictEqual(isValidConversationName('Subject-Drink-6607'), true);
+  assert.strictEqual(isValidConversationName('u/Pshyce11'), true);
+
+  console.log('✅ isValidConversationName validator tests passed.');
 }
 
 console.log('🎉 ALL CHAT & DM TESTS PASSED!');

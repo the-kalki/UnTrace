@@ -42,18 +42,31 @@ export class RedditChatCleaner {
   /**
    * Fetches legacy private messages (inbox & sent PMs)
    */
-  async fetchLegacyPMs(limit = 100) {
+  async fetchLegacyPMs(maxCount = 500) {
     try {
-      const res = await this.api.fetchDirectMessages(limit);
-      const items = res?.data?.children || [];
+      const allChildren = [];
+      let after = null;
       const currentUsername = (this.api.username || '').toLowerCase();
 
-      return items.map((child) => {
+      while (allChildren.length < maxCount) {
+        const fetchLimit = Math.min(100, maxCount - allChildren.length);
+        const res = await this.api.fetchDirectMessages(fetchLimit, after);
+        const children = res?.data?.children || [];
+        if (children.length === 0) break;
+
+        allChildren.push(...children);
+        after = res?.data?.after;
+        if (!after) break;
+      }
+
+      return allChildren.map((child) => {
         const d = child.data || {};
+        const otherParty = (d.author || '').toLowerCase() === currentUsername ? d.dest : d.author;
         return {
           id: d.name, // e.g. t4_xxxx
           channelId: `pm_${d.author || 'unknown'}_${d.dest || 'unknown'}`,
           type: 'pm',
+          name: otherParty || d.author || d.dest || 'Direct Message',
           author: d.author,
           recipient: d.dest,
           subject: d.subject || '(no subject)',
@@ -307,26 +320,94 @@ export class RedditChatCleaner {
 
 /**
  * Approximate parsing of chat timestamp to Epoch milliseconds
+ * Handles Reddit relative times ("2y ago", "6mo", "3w", "5d", "Yesterday", "11:14 AM"),
+ * ISO strings, and Unix timestamps.
  */
 export function parseChatTimestamp(item) {
   if (!item) return Date.now();
+
+  // 1. Unix timestamp (seconds or milliseconds)
   if (typeof item.createdUtc === 'number') {
-    return item.createdUtc * 1000;
+    return item.createdUtc > 1e11 ? item.createdUtc : item.createdUtc * 1000;
   }
+
+  // 2. ISO or formatted date string from GraphQL
   if (item.lastMessageAt || item.createdAt) {
     const parsed = new Date(item.lastMessageAt || item.createdAt).getTime();
     if (!isNaN(parsed)) return parsed;
   }
-  if (item.time) {
-    const t = String(item.time).toLowerCase().trim();
-    if (t.includes('am') || t.includes('pm') || t.includes('now') || t.includes('yesterday') || t.includes('ago')) {
-      // Recent (within last 48 hours)
-      return Date.now() - 3600 * 1000;
-    }
-    const parsed = new Date(t).getTime();
-    if (!isNaN(parsed)) return parsed;
+
+  const rawTime = (item.time || item.preview || '').trim();
+  if (!rawTime) {
+    return Date.now();
   }
-  return Date.now();
+
+  const t = rawTime.toLowerCase();
+  const now = Date.now();
+  const ONE_DAY_MS = 86400 * 1000;
+
+  // Years: "2y ago", "2 yr. ago", "2 years ago", "2y"
+  const yrMatch = t.match(/(\d+)\s*(?:y|yr\.?|years?)\b/);
+  if (yrMatch) {
+    const yrs = parseInt(yrMatch[1], 10);
+    return now - yrs * 365 * ONE_DAY_MS;
+  }
+
+  // Months: "6mo ago", "6 mo. ago", "6 months ago", "6mo"
+  const moMatch = t.match(/(\d+)\s*(?:mo\.?|months?)\b/);
+  if (moMatch) {
+    const mos = parseInt(moMatch[1], 10);
+    return now - mos * 30 * ONE_DAY_MS;
+  }
+
+  // Weeks: "3w ago", "3 wk. ago", "3 weeks ago", "3w"
+  const wkMatch = t.match(/(\d+)\s*(?:w|wk\.?|weeks?)\b/);
+  if (wkMatch) {
+    const wks = parseInt(wkMatch[1], 10);
+    return now - wks * 7 * ONE_DAY_MS;
+  }
+
+  // Days: "5d ago", "5 d. ago", "5 days ago", "5d"
+  const dayMatch = t.match(/(\d+)\s*(?:d\.?|days?)\b/);
+  if (dayMatch) {
+    const days = parseInt(dayMatch[1], 10);
+    return now - days * ONE_DAY_MS;
+  }
+
+  // "Yesterday"
+  if (t.includes('yesterday')) {
+    return now - ONE_DAY_MS;
+  }
+
+  // Hours: "3h ago", "3 hr. ago", "3 hours ago", "3h"
+  const hrMatch = t.match(/(\d+)\s*(?:h|hr\.?|hours?)\b/);
+  if (hrMatch) {
+    const hrs = parseInt(hrMatch[1], 10);
+    return now - hrs * 3600 * 1000;
+  }
+
+  // Minutes: "15m ago", "15 min. ago", "15 mins ago", "15m"
+  const minMatch = t.match(/(\d+)\s*(?:m|min\.?|mins?|minutes?)\b/);
+  if (minMatch) {
+    const mins = parseInt(minMatch[1], 10);
+    return now - mins * 60 * 1000;
+  }
+
+  // Time of day: "11:14 am", "9:19 pm", "now"
+  if (t.includes('am') || t.includes('pm') || t.includes('now')) {
+    return now - 1800 * 1000; // Today
+  }
+
+  // Standard dates: "Sep 25", "Jan 12 2024", "10/12/2023"
+  const parsedDate = new Date(rawTime).getTime();
+  if (!isNaN(parsedDate)) {
+    if (parsedDate > now) {
+      return parsedDate - 365 * ONE_DAY_MS;
+    }
+    return parsedDate;
+  }
+
+  return now;
 }
 
 /**
@@ -334,19 +415,35 @@ export function parseChatTimestamp(item) {
  */
 export function isDeletedAccount(item) {
   if (!item) return false;
-  const name = (item.name || '').toLowerCase();
-  const author = (item.author || '').toLowerCase();
-  const recipient = (item.recipient || '').toLowerCase();
-  const preview = (item.preview || '').toLowerCase();
+  const isDead = (str) => {
+    if (!str || typeof str !== 'string') return false;
+    const s = str.toLowerCase().trim();
+    return (
+      s === '[deleted]' ||
+      s === 'deleted' ||
+      s === 'ghost' ||
+      s === '[unavailable]' ||
+      s === 'unavailable' ||
+      s === 'u/[deleted]' ||
+      s.includes('deleted') ||
+      s.includes('deactivated')
+    );
+  };
 
-  const isDead = (str) =>
-    str === '[deleted]' ||
-    str === 'deleted' ||
-    str === 'ghost' ||
-    str === '[unavailable]' ||
-    str.includes('[deleted]');
+  const name = item.name;
+  const author = item.author;
+  const recipient = item.recipient;
+  const preview = (item.preview || item.body || '').toLowerCase();
 
-  return isDead(name) || isDead(author) || isDead(recipient) || preview.includes('[deleted]');
+  return (
+    isDead(name) ||
+    isDead(author) ||
+    isDead(recipient) ||
+    preview.includes('[deleted]') ||
+    preview.includes('account was deleted') ||
+    preview.includes('user deactivated') ||
+    preview.includes('failed to load user')
+  );
 }
 
 /**
@@ -365,7 +462,8 @@ export function filterChatItems(items = [], filters = {}) {
   const ONE_DAY_MS = 86400 * 1000;
 
   let maxAgeDays = null;
-  if (dateRange === '30d') maxAgeDays = 30;
+  if (dateRange === '7d') maxAgeDays = 7;
+  else if (dateRange === '30d') maxAgeDays = 30;
   else if (dateRange === '90d') maxAgeDays = 90;
   else if (dateRange === '180d') maxAgeDays = 180;
   else if (dateRange === '365d') maxAgeDays = 365;
@@ -407,5 +505,41 @@ export function filterChatItems(items = [], filters = {}) {
 
     return true;
   });
+}
+
+/**
+ * Validates that a string candidate represents a genuine Reddit conversation name / user,
+ * filtering out subreddits, comment counters, timestamps, and generic UI buttons.
+ */
+export function isValidConversationName(name) {
+  if (!name || typeof name !== 'string') return false;
+  const clean = name.trim();
+  if (clean.length === 0 || clean.length > 50) return false;
+
+  // Reject subreddits (e.g. "r/memes", "r/DesiSexTalk", "u/r/memes")
+  if (/^(?:u\/)?r\//i.test(clean) || clean.includes('/r/')) return false;
+
+  // Reject comment counts (e.g. "33 comments", "8 comments", "1 comment")
+  if (/\b\d+\s*comments?\b/i.test(clean)) return false;
+
+  // Reject video/audio timestamps (e.g. "0:10", "1:23:45")
+  if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(clean)) return false;
+
+  // Reject generic controls and navigation items
+  const IGNORED = new Set([
+    'chats', 'requests', 'threads', 'messages', 'direct', 'all', 'new chat',
+    'create', 'search', 'clear', 'share', 'reddit pro', 'save', 'hide', 'report',
+    'reply', 'award', 'vote', 'upvote', 'downvote', 'join', 'joined', 'leave',
+    'view thread', 'settings', 'notifications', 'home', 'popular', 'explore',
+    'help', 'help center', 'user agreement', 'privacy policy', 'content policy',
+    'accessibility', 'reddit rules', 'terms', 'about reddit', 'delete my messages',
+    'hide conversations after deleting', 'upgrade', 'upgrade for a small one-time payment'
+  ]);
+  if (IGNORED.has(clean.toLowerCase())) return false;
+
+  // Reject pure numbers or punctuation
+  if (/^[\d\s\-_.,!@#$%^&*()]+$/.test(clean) && !clean.startsWith('u/')) return false;
+
+  return true;
 }
 

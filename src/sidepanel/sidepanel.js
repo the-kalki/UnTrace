@@ -9,7 +9,7 @@ import { HistoryHarvester } from '../core/harvester.js';
 import { HistoryNuker } from '../core/nuker.js';
 import { HistoryExporter } from '../core/exporter.js';
 import { AdaptiveRateLimiter } from '../core/rate-limiter.js';
-import { RedditChatCleaner, filterChatItems, isDeletedAccount, parseChatTimestamp } from '../core/chat-cleaner.js';
+import { RedditChatCleaner, filterChatItems, isDeletedAccount, parseChatTimestamp, isValidConversationName } from '../core/chat-cleaner.js';
 
 // Application State
 const state = {
@@ -682,12 +682,12 @@ async function handleScanChat() {
             log(`CHAT: Tab bridge replied: isChatOpen=${domResponse.isChatOpen}, channelsFound=${numFound}`, 'info');
 
             if (numFound > 0) {
-              state.discoveredChannels = domResponse.channels;
-              log(`CHAT: Discovered ${numFound} conversations in active Reddit tab!`, 'success');
+              state.discoveredChannels = domResponse.channels.filter(ch => isValidConversationName(ch.name));
+              log(`CHAT: Discovered ${state.discoveredChannels.length} valid conversations in active Reddit tab!`, 'success');
             } else if (!domResponse.isChatOpen) {
-              log('CHAT: Chat dock not detected. Click the Chat icon on Reddit to open it.', 'warn');
+              log('CHAT: Chat dock not detected. Click "Open chat.reddit.com" or open the Chat icon on Reddit.', 'warn');
             } else {
-              log('CHAT: Chat dock is open, but 0 conversations matched. Click a conversation or open reddit.com/chat', 'warn');
+              log('CHAT: Chat dock is open, but 0 conversations matched.', 'warn');
             }
           } else {
             log('CHAT: No response from tab. Please refresh your Reddit tab (F5).', 'warn');
@@ -703,7 +703,7 @@ async function handleScanChat() {
       if (state.discoveredChannels.length === 0) {
         const gqlChannels = await state.chatCleaner.fetchModernChannels();
         if (gqlChannels.length > 0) {
-          state.discoveredChannels = gqlChannels;
+          state.discoveredChannels = gqlChannels.filter(ch => isValidConversationName(ch.name));
         }
       }
     }
@@ -737,12 +737,34 @@ async function handleScanChat() {
         <div style="color: var(--accent-amber); font-weight: 500;">
           ⚠️ 0 conversations found.
         </div>
-        <div style="margin-top: 4px; font-size: 10px; color: var(--text-secondary);">
-          Make sure your Reddit tab has the chat dock open, or refresh your Reddit tab (F5) and click Scan again.
+        <div style="margin-top: 4px; font-size: 11px; color: var(--text-secondary); line-height: 1.4;">
+          Reddit modern chat runs inside <b>chat.reddit.com</b>. If your chat dock is closed or hidden, open the full chat webapp below:
+        </div>
+        <div style="margin-top: 8px;">
+          <button id="btn-open-reddit-chat" class="btn btn-secondary" style="width: 100%; font-size: 11px; padding: 6px; border: 1px solid var(--accent-cyan); color: var(--accent-cyan); cursor: pointer;">
+            🚀 Open chat.reddit.com in Tab
+          </button>
         </div>
       `;
       el.btnExportChat.disabled = true;
       el.btnNukeChat.disabled = true;
+
+      const btnOpen = document.getElementById('btn-open-reddit-chat');
+      if (btnOpen) {
+        btnOpen.addEventListener('click', async () => {
+          try {
+            const tab = await getTargetRedditTab();
+            if (tab && tab.id) {
+              await chrome.tabs.update(tab.id, { url: 'https://chat.reddit.com' });
+            } else {
+              await chrome.tabs.create({ url: 'https://chat.reddit.com' });
+            }
+            log('CHAT: Opening chat.reddit.com... Allow 2-3 seconds for SendBird to mount, then click Scan Chats again.', 'cyan');
+          } catch (e) {
+            log(`CHAT: Error opening chat tab: ${e.message}`, 'error');
+          }
+        });
+      }
     }
   } catch (err) {
     el.chatResults.innerHTML = `<span style="color: var(--accent-danger);">⚠️ Scan error: ${err.message}</span>`;
@@ -773,8 +795,6 @@ function renderChatChannelsList() {
   const filteredPMs = filterChatItems(state.discoveredPMs, state.chatFilters);
   const filteredChannels = filterChatItems(state.discoveredChannels, state.chatFilters);
   const totalFiltered = filteredPMs.length + filteredChannels.length;
-
-  el.chatCountLabel.textContent = `${totalFiltered} / ${totalDiscovered} Shown (${state.selectedChatIds.size} Sel)`;
 
   if (totalFiltered === 0) {
     list.innerHTML = `
@@ -807,7 +827,7 @@ function renderChatChannelsList() {
         <div class="chat-item-details">
           <div class="chat-item-title">
             <span style="color: var(--accent-cyan); font-size: 9px; font-weight: 700;">[PM]</span>
-            ${escapeHtml(pm.author || 'User')} → ${escapeHtml(pm.recipient || 'Me')}: ${escapeHtml(pm.subject || '')}
+            ${escapeHtml(pm.name || pm.author || 'User')}: ${escapeHtml(pm.subject || '')}
             ${deadBadge}
           </div>
           <div class="chat-item-meta">
@@ -868,20 +888,21 @@ function renderChatChannelsList() {
  * Select or deselect all conversations
  */
 function handleSelectAllChats(selectAll) {
+  const filteredPMs = filterChatItems(state.discoveredPMs, state.chatFilters);
+  const filteredChannels = filterChatItems(state.discoveredChannels, state.chatFilters);
+  const visibleIds = [
+    ...filteredPMs.map(p => p.id),
+    ...filteredChannels.map(c => c.id || c.channelUrl)
+  ];
+
   if (!selectAll) {
     state.selectedChatIds.clear();
-    const checkboxes = el.chatChannelsList.querySelectorAll('.chat-checkbox');
-    checkboxes.forEach(cb => { cb.checked = false; });
   } else {
-    // Select all visible / filtered items
-    const checkboxes = el.chatChannelsList.querySelectorAll('.chat-checkbox');
-    checkboxes.forEach(cb => {
-      cb.checked = true;
-      const id = cb.dataset.id;
+    visibleIds.forEach(id => {
       if (id) state.selectedChatIds.add(id);
     });
   }
-  updateChatButtonStates();
+  renderChatChannelsList();
 }
 
 /**
@@ -963,13 +984,39 @@ function resetChatFilters() {
 }
 
 function updateChatButtonStates() {
-  const count = state.selectedChatIds.size;
   const totalDiscovered = state.discoveredPMs.length + state.discoveredChannels.length;
-  el.chatCountLabel.textContent = `${count} Selected (${totalDiscovered} Total)`;
-  el.btnNukeChat.disabled = count === 0 || state.isChatPurging;
-  if (!state.isChatPurging) {
-    el.btnNukeChat.textContent = count > 0 ? `🔥 Purge Chats (${count})` : '🔥 Purge Chats';
+
+  const filteredPMs = filterChatItems(state.discoveredPMs, state.chatFilters);
+  const filteredChannels = filterChatItems(state.discoveredChannels, state.chatFilters);
+  const totalFiltered = filteredPMs.length + filteredChannels.length;
+
+  const visibleIds = new Set([
+    ...filteredPMs.map(p => p.id),
+    ...filteredChannels.map(c => c.id || c.channelUrl)
+  ]);
+
+  let selectedVisibleCount = 0;
+  for (const id of state.selectedChatIds) {
+    if (visibleIds.has(id)) selectedVisibleCount++;
   }
+
+  const isFiltering = totalFiltered < totalDiscovered;
+
+  if (isFiltering) {
+    el.chatCountLabel.textContent = `${selectedVisibleCount} / ${totalFiltered} Sel (${totalDiscovered} Total)`;
+    el.btnNukeChat.disabled = selectedVisibleCount === 0 || state.isChatPurging;
+    if (!state.isChatPurging) {
+      el.btnNukeChat.textContent = selectedVisibleCount > 0 ? `🔥 Purge Selected (${selectedVisibleCount})` : '🔥 Purge Selected';
+    }
+  } else {
+    el.chatCountLabel.textContent = `${state.selectedChatIds.size} / ${totalDiscovered} Selected`;
+    const count = state.selectedChatIds.size;
+    el.btnNukeChat.disabled = count === 0 || state.isChatPurging;
+    if (!state.isChatPurging) {
+      el.btnNukeChat.textContent = count > 0 ? `🔥 Purge Chats (${count})` : '🔥 Purge Chats';
+    }
+  }
+
   el.btnExportChat.disabled = totalDiscovered === 0;
 }
 
@@ -987,9 +1034,25 @@ function handleExportChat() {
  * Executes chat purge sequence
  */
 async function handleNukeChats() {
-  if (state.selectedChatIds.size === 0) return;
+  const totalDiscovered = state.discoveredPMs.length + state.discoveredChannels.length;
+  const filteredPMs = filterChatItems(state.discoveredPMs, state.chatFilters);
+  const filteredChannels = filterChatItems(state.discoveredChannels, state.chatFilters);
+  const totalFiltered = filteredPMs.length + filteredChannels.length;
+  const isFiltering = totalFiltered < totalDiscovered;
 
-  const count = state.selectedChatIds.size;
+  const visibleIds = new Set([
+    ...filteredPMs.map(p => p.id),
+    ...filteredChannels.map(c => c.id || c.channelUrl)
+  ]);
+
+  // Target IDs are either visible & selected (if filtering) or all selected (if not filtering)
+  const targetIds = isFiltering
+    ? Array.from(state.selectedChatIds).filter(id => visibleIds.has(id))
+    : Array.from(state.selectedChatIds);
+
+  if (targetIds.length === 0) return;
+
+  const count = targetIds.length;
   const confirmed = window.confirm(`Permanently purge ${count} selected chats/messages? This cannot be undone.`);
   if (!confirmed) return;
 
@@ -1024,7 +1087,7 @@ async function handleNukeChats() {
         deletePMs: el.chatOptPms ? el.chatOptPms.checked : true,
         deleteModern: el.chatOptModern ? el.chatOptModern.checked : true,
         autoHide: el.chatOptAutohide ? el.chatOptAutohide.checked : true,
-        selectedChannelIds: Array.from(state.selectedChatIds)
+        selectedChannelIds: targetIds
       },
       (progress) => {
         if (progress.message) {
@@ -1044,8 +1107,11 @@ async function handleNukeChats() {
     el.btnNukeChat.disabled = false;
     el.btnScanChat.disabled = false;
     el.btnAbortChat.classList.add('hidden');
-    // Refresh list
-    await handleScanChat();
+    // Remove purged items from state and re-render
+    state.discoveredPMs = state.discoveredPMs.filter(pm => !targetIds.includes(pm.id));
+    state.discoveredChannels = state.discoveredChannels.filter(ch => !targetIds.includes(ch.id) && !targetIds.includes(ch.channelUrl));
+    targetIds.forEach(id => state.selectedChatIds.delete(id));
+    renderChatChannelsList();
   }
 }
 
