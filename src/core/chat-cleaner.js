@@ -214,7 +214,7 @@ export class RedditChatCleaner {
    */
   async nukeChats(options = {}, onProgress = () => {}) {
     this.resetAbort();
-    const { deletePMs = true, deleteModern = true, selectedChannelIds = null } = options;
+    const { deletePMs = true, deleteModern = true, autoHide = true, selectedChannelIds = null } = options;
     const stats = {
       pmsDeleted: 0,
       modernMessagesDeleted: 0,
@@ -274,17 +274,19 @@ export class RedditChatCleaner {
         }
 
         try {
-          await this.rateLimiter.throttle();
-          const left = await this.leaveOrHideChannel(ch.channelUrl || ch.id);
-          if (left) {
-            stats.channelsLeft++;
-            this.rateLimiter.recordSuccess();
-            onProgress({
-              stage: 'CHANNEL_LEFT',
-              stats,
-              target: ch.name,
-              message: `Cleared conversation channel: ${ch.name}`
-            });
+          if (autoHide) {
+            await this.rateLimiter.throttle();
+            const left = await this.leaveOrHideChannel(ch.channelUrl || ch.id);
+            if (left) {
+              stats.channelsLeft++;
+              this.rateLimiter.recordSuccess();
+              onProgress({
+                stage: 'CHANNEL_LEFT',
+                stats,
+                target: ch.name,
+                message: `Cleared & hid conversation channel: ${ch.name}`
+              });
+            }
           }
         } catch (err) {
           stats.errors++;
@@ -302,3 +304,108 @@ export class RedditChatCleaner {
     return stats;
   }
 }
+
+/**
+ * Approximate parsing of chat timestamp to Epoch milliseconds
+ */
+export function parseChatTimestamp(item) {
+  if (!item) return Date.now();
+  if (typeof item.createdUtc === 'number') {
+    return item.createdUtc * 1000;
+  }
+  if (item.lastMessageAt || item.createdAt) {
+    const parsed = new Date(item.lastMessageAt || item.createdAt).getTime();
+    if (!isNaN(parsed)) return parsed;
+  }
+  if (item.time) {
+    const t = String(item.time).toLowerCase().trim();
+    if (t.includes('am') || t.includes('pm') || t.includes('now') || t.includes('yesterday') || t.includes('ago')) {
+      // Recent (within last 48 hours)
+      return Date.now() - 3600 * 1000;
+    }
+    const parsed = new Date(t).getTime();
+    if (!isNaN(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+/**
+ * Checks if a chat conversation is with a deleted or deactivated account
+ */
+export function isDeletedAccount(item) {
+  if (!item) return false;
+  const name = (item.name || '').toLowerCase();
+  const author = (item.author || '').toLowerCase();
+  const recipient = (item.recipient || '').toLowerCase();
+  const preview = (item.preview || '').toLowerCase();
+
+  const isDead = (str) =>
+    str === '[deleted]' ||
+    str === 'deleted' ||
+    str === 'ghost' ||
+    str === '[unavailable]' ||
+    str.includes('[deleted]');
+
+  return isDead(name) || isDead(author) || isDead(recipient) || preview.includes('[deleted]');
+}
+
+/**
+ * Filters an array of chat items by search, date range, account status, and type
+ */
+export function filterChatItems(items = [], filters = {}) {
+  const {
+    search = '',
+    dateRange = 'all',
+    accountStatus = 'all',
+    channelType = 'all'
+  } = filters;
+
+  const query = search.trim().toLowerCase();
+  const now = Date.now();
+  const ONE_DAY_MS = 86400 * 1000;
+
+  let maxAgeDays = null;
+  if (dateRange === '30d') maxAgeDays = 30;
+  else if (dateRange === '90d') maxAgeDays = 90;
+  else if (dateRange === '180d') maxAgeDays = 180;
+  else if (dateRange === '365d') maxAgeDays = 365;
+
+  return items.filter(item => {
+    // 1. Channel Type filter
+    if (channelType !== 'all') {
+      const itemType = (item.type || 'direct').toLowerCase();
+      if (channelType === 'pm' && itemType !== 'pm') return false;
+      if (channelType === 'direct' && itemType !== 'direct') return false;
+      if (channelType === 'group' && itemType !== 'group') return false;
+    }
+
+    // 2. Account Status filter
+    const isDeleted = isDeletedAccount(item);
+    if (accountStatus === 'deleted' && !isDeleted) return false;
+    if (accountStatus === 'active' && isDeleted) return false;
+
+    // 3. Date Range filter (Older than X days)
+    if (maxAgeDays !== null) {
+      const timestamp = parseChatTimestamp(item);
+      const ageInDays = (now - timestamp) / ONE_DAY_MS;
+      if (ageInDays < maxAgeDays) return false;
+    }
+
+    // 4. Search query filter
+    if (query) {
+      const matchName = (item.name || '').toLowerCase().includes(query);
+      const matchAuthor = (item.author || '').toLowerCase().includes(query);
+      const matchRecipient = (item.recipient || '').toLowerCase().includes(query);
+      const matchPreview = (item.preview || '').toLowerCase().includes(query);
+      const matchSubject = (item.subject || '').toLowerCase().includes(query);
+      const matchBody = (item.body || '').toLowerCase().includes(query);
+
+      if (!matchName && !matchAuthor && !matchRecipient && !matchPreview && !matchSubject && !matchBody) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+}
+

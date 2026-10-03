@@ -3,7 +3,7 @@
  */
 
 import assert from 'node:assert';
-import { RedditChatCleaner } from '../src/core/chat-cleaner.js';
+import { RedditChatCleaner, parseChatTimestamp, isDeletedAccount, filterChatItems } from '../src/core/chat-cleaner.js';
 import { HistoryExporter } from '../src/core/exporter.js';
 import { AdaptiveRateLimiter } from '../src/core/rate-limiter.js';
 
@@ -196,6 +196,85 @@ console.log('🧪 Starting Chat & DM Deletion Test Suite...');
   assert(cleaner.abortRequested === true);
   assert(stats.pmsDeleted < 3, 'Should abort before all messages are deleted');
   console.log('✅ Chat nuke abort cancellation tests passed.');
+}
+
+// 6. Test Selective Privacy Clean-up & Filter Engine
+{
+  const now = Date.now();
+  const ONE_DAY_MS = 86400 * 1000;
+
+  const mockItems = [
+    {
+      id: 'ch_recent_friend',
+      name: 'best_friend',
+      type: 'direct',
+      preview: 'See you tomorrow!',
+      time: '11:14 AM' // very recent
+    },
+    {
+      id: 'ch_old_convo',
+      name: 'old_trader',
+      type: 'direct',
+      preview: 'Deal confirmed',
+      createdUtc: Math.floor((now - 200 * ONE_DAY_MS) / 1000) // ~200 days old (>6 months)
+    },
+    {
+      id: 'ch_deleted_user',
+      name: '[deleted]',
+      type: 'direct',
+      preview: '[deleted] by user',
+      createdUtc: Math.floor((now - 50 * ONE_DAY_MS) / 1000)
+    },
+    {
+      id: 'pm_legacy_1',
+      id_val: 't4_99',
+      author: 'ghost',
+      recipient: 'me',
+      type: 'pm',
+      subject: 'Old question',
+      body: 'Hello from years ago',
+      createdUtc: Math.floor((now - 400 * ONE_DAY_MS) / 1000) // > 1 year old
+    },
+    {
+      id: 'ch_crypto_group',
+      name: 'Crypto Chat Group',
+      type: 'group',
+      preview: 'Bitcoin hit high',
+      createdUtc: Math.floor((now - 10 * ONE_DAY_MS) / 1000)
+    }
+  ];
+
+  // Test isDeletedAccount
+  assert.strictEqual(isDeletedAccount(mockItems[2]), true);
+  assert.strictEqual(isDeletedAccount(mockItems[3]), true); // author 'ghost'
+  assert.strictEqual(isDeletedAccount(mockItems[0]), false);
+
+  // Test Search filter
+  const searchResults = filterChatItems(mockItems, { search: 'Crypto' });
+  assert.strictEqual(searchResults.length, 1);
+  assert.strictEqual(searchResults[0].id, 'ch_crypto_group');
+
+  // Test Date filter: older than 180 days (>6 months)
+  const older180d = filterChatItems(mockItems, { dateRange: '180d' });
+  assert.strictEqual(older180d.length, 2); // old_trader (200d) and pm_legacy_1 (400d)
+
+  // Test Account Status filter: deleted accounts only
+  const deletedOnly = filterChatItems(mockItems, { accountStatus: 'deleted' });
+  assert.strictEqual(deletedOnly.length, 2);
+  assert(deletedOnly.some(i => i.id === 'ch_deleted_user'));
+  assert(deletedOnly.some(i => i.id === 'pm_legacy_1'));
+
+  // Test Channel Type filter: group only
+  const groupsOnly = filterChatItems(mockItems, { channelType: 'group' });
+  assert.strictEqual(groupsOnly.length, 1);
+  assert.strictEqual(groupsOnly[0].id, 'ch_crypto_group');
+
+  // Test Channel Type filter: pm only
+  const pmsOnly = filterChatItems(mockItems, { channelType: 'pm' });
+  assert.strictEqual(pmsOnly.length, 1);
+  assert.strictEqual(pmsOnly[0].id, 'pm_legacy_1');
+
+  console.log('✅ Selective Privacy Clean-up filter engine tests passed.');
 }
 
 console.log('🎉 ALL CHAT & DM TESTS PASSED!');

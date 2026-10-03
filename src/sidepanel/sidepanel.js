@@ -9,7 +9,7 @@ import { HistoryHarvester } from '../core/harvester.js';
 import { HistoryNuker } from '../core/nuker.js';
 import { HistoryExporter } from '../core/exporter.js';
 import { AdaptiveRateLimiter } from '../core/rate-limiter.js';
-import { RedditChatCleaner } from '../core/chat-cleaner.js';
+import { RedditChatCleaner, filterChatItems, isDeletedAccount, parseChatTimestamp } from '../core/chat-cleaner.js';
 
 // Application State
 const state = {
@@ -20,6 +20,13 @@ const state = {
   harvester: null,
   nuker: null,
   chatCleaner: null,
+  activeMode: 'profile', // 'profile' | 'chat'
+  chatFilters: {
+    search: '',
+    dateRange: 'all',
+    accountStatus: 'all',
+    channelType: 'all'
+  },
   harvestedComments: [],
   harvestedPosts: [],
   targetItems: [],
@@ -35,6 +42,12 @@ const state = {
 
 // DOM Elements
 const el = {
+  // Mode Navigation Tabs
+  tabModeProfile: document.getElementById('tab-mode-profile'),
+  tabModeChat: document.getElementById('tab-mode-chat'),
+  viewProfile: document.getElementById('view-profile'),
+  viewChat: document.getElementById('view-chat'),
+
   // Session
   sessionPill: document.getElementById('session-pill'),
   accountName: document.getElementById('account-name'),
@@ -73,21 +86,27 @@ const el = {
   filterPreserveGilded: document.getElementById('filter-preserve-gilded'),
   btnSaveFilters: document.getElementById('btn-save-filters'),
 
-  // Chat Drawer
-  drawerChat: document.getElementById('drawer-chat'),
-  btnCloseChatDrawer: document.getElementById('btn-close-chat-drawer'),
-  btnScanChat: document.getElementById('btn-scan-chat'),
-  chatResults: document.getElementById('chat-results'),
+  // Chat Workspace & Selective Filters
   chatOptPms: document.getElementById('chat-opt-pms'),
   chatOptModern: document.getElementById('chat-opt-modern'),
-  chatChannelsContainer: document.getElementById('chat-channels-container'),
-  chatCountLabel: document.getElementById('chat-count-label'),
-  btnSelectAllChats: document.getElementById('btn-select-all-chats'),
-  btnDeselectAllChats: document.getElementById('btn-deselect-all-chats'),
-  chatChannelsList: document.getElementById('chat-channels-list'),
+  chatOptAutohide: document.getElementById('chat-opt-autohide'),
+  btnScanChat: document.getElementById('btn-scan-chat'),
+  chatResults: document.getElementById('chat-results'),
   btnExportChat: document.getElementById('btn-export-chat'),
   btnNukeChat: document.getElementById('btn-nuke-chat'),
   btnAbortChat: document.getElementById('btn-abort-chat'),
+  chatChannelsContainer: document.getElementById('chat-channels-container'),
+  chatSearchInput: document.getElementById('chat-search-input'),
+  btnChatSearchClear: document.getElementById('btn-chat-search-clear'),
+  chatFilterDate: document.getElementById('chat-filter-date'),
+  chatFilterAccount: document.getElementById('chat-filter-account'),
+  chatFilterType: document.getElementById('chat-filter-type'),
+  chatCountLabel: document.getElementById('chat-count-label'),
+  btnSelectAllChats: document.getElementById('btn-select-all-chats'),
+  btnDeselectAllChats: document.getElementById('btn-deselect-all-chats'),
+  btnSelectDeletedChats: document.getElementById('btn-select-deleted-chats'),
+  btnSelectOlderChats: document.getElementById('btn-select-older-chats'),
+  chatChannelsList: document.getElementById('chat-channels-list'),
 
   // Precision Terminal Dock
   terminalBarToggle: document.getElementById('terminal-bar-toggle'),
@@ -188,9 +207,49 @@ async function checkAuthSession() {
 }
 
 /**
- * Filter Drawer Toggling
+ * Switches the primary workspace mode between Posts/Comments and DMs/Chats
+ */
+function switchMode(mode) {
+  state.activeMode = mode;
+  if (!el.tabModeProfile || !el.tabModeChat || !el.viewProfile || !el.viewChat) return;
+
+  if (mode === 'chat') {
+    el.tabModeProfile.classList.remove('active');
+    el.tabModeProfile.setAttribute('aria-selected', 'false');
+    el.tabModeChat.classList.add('active');
+    el.tabModeChat.setAttribute('aria-selected', 'true');
+    el.viewProfile.classList.add('hidden');
+    el.viewChat.classList.remove('hidden');
+  } else {
+    el.tabModeChat.classList.remove('active');
+    el.tabModeChat.setAttribute('aria-selected', 'false');
+    el.tabModeProfile.classList.add('active');
+    el.tabModeProfile.setAttribute('aria-selected', 'true');
+    el.viewChat.classList.add('hidden');
+    el.viewProfile.classList.remove('hidden');
+  }
+  chrome.storage?.local?.set({ activeMode: mode }).catch(() => {});
+}
+
+/**
+ * Filter Drawer Toggling & Mode Switching
  */
 function setupDrawers() {
+  // Mode Navigation
+  if (el.tabModeProfile) {
+    el.tabModeProfile.addEventListener('click', () => switchMode('profile'));
+  }
+  if (el.tabModeChat) {
+    el.tabModeChat.addEventListener('click', () => switchMode('chat'));
+  }
+
+  // Header Quick Chat Toggle Shortcut
+  if (el.btnToggleChat) {
+    el.btnToggleChat.addEventListener('click', () => {
+      switchMode(state.activeMode === 'chat' ? 'profile' : 'chat');
+    });
+  }
+
   el.toggleFilterDrawer.addEventListener('click', () => {
     const isClosed = el.filterDrawerBody.classList.contains('hidden');
     if (isClosed) {
@@ -200,15 +259,6 @@ function setupDrawers() {
       el.filterDrawerBody.classList.add('hidden');
       el.filterChevron.classList.remove('expanded');
     }
-  });
-
-  // Chat Drawer Toggling
-  el.btnToggleChat.addEventListener('click', () => {
-    el.drawerChat.classList.toggle('hidden');
-  });
-
-  el.btnCloseChatDrawer.addEventListener('click', () => {
-    el.drawerChat.classList.add('hidden');
   });
 
   // Terminal Dock Toggling
@@ -697,29 +747,54 @@ async function handleScanChat() {
 }
 
 /**
- * Renders discovered chats in the sidepanel drawer
+ * Renders discovered chats in the sidepanel workspace with selective privacy filtering
  */
 function renderChatChannelsList() {
   const container = el.chatChannelsContainer;
   const list = el.chatChannelsList;
   if (!container || !list) return;
 
-  const total = state.discoveredPMs.length + state.discoveredChannels.length;
-  el.chatCountLabel.textContent = `${total} Found`;
-
-  if (total === 0) {
+  const totalDiscovered = state.discoveredPMs.length + state.discoveredChannels.length;
+  if (totalDiscovered === 0) {
     container.classList.add('hidden');
     list.innerHTML = '';
     return;
   }
 
   container.classList.remove('hidden');
+
+  // Filter PMs and Channels with current filters
+  const filteredPMs = filterChatItems(state.discoveredPMs, state.chatFilters);
+  const filteredChannels = filterChatItems(state.discoveredChannels, state.chatFilters);
+  const totalFiltered = filteredPMs.length + filteredChannels.length;
+
+  el.chatCountLabel.textContent = `${totalFiltered} / ${totalDiscovered} Shown (${state.selectedChatIds.size} Sel)`;
+
+  if (totalFiltered === 0) {
+    list.innerHTML = `
+      <div style="text-align: center; padding: 16px 8px; color: var(--text-muted); font-size: 11px;">
+        No conversations match your current filters.
+        <div style="margin-top: 6px;">
+          <button id="btn-reset-chat-filters" class="btn-chip chip-cyan" style="font-size: 10px;">Reset Filters</button>
+        </div>
+      </div>
+    `;
+    const resetBtn = list.querySelector('#btn-reset-chat-filters');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', resetChatFilters);
+    }
+    updateChatButtonStates();
+    return;
+  }
+
   let html = '';
 
-  // Render PMs
-  state.discoveredPMs.forEach(pm => {
+  // Render Filtered PMs
+  filteredPMs.forEach(pm => {
     const isChecked = state.selectedChatIds.has(pm.id) ? 'checked' : '';
     const dateStr = pm.createdUtc ? new Date(pm.createdUtc * 1000).toLocaleDateString() : '';
+    const isDead = isDeletedAccount(pm);
+    const deadBadge = isDead ? '<span class="badge-card-deleted">DELETED</span>' : '';
     html += `
       <div class="chat-item-card" data-id="${pm.id}">
         <input type="checkbox" class="chat-checkbox" data-id="${pm.id}" ${isChecked}>
@@ -727,28 +802,39 @@ function renderChatChannelsList() {
           <div class="chat-item-title">
             <span style="color: var(--accent-cyan); font-size: 9px; font-weight: 700;">[PM]</span>
             ${escapeHtml(pm.author || 'User')} → ${escapeHtml(pm.recipient || 'Me')}: ${escapeHtml(pm.subject || '')}
+            ${deadBadge}
           </div>
-          <div class="chat-item-meta">${dateStr} • ${escapeHtml(pm.body.slice(0, 32))}...</div>
+          <div class="chat-item-meta">
+            <span class="chat-time-tag">${dateStr}</span> • ${escapeHtml(pm.body.slice(0, 32))}...
+          </div>
         </div>
       </div>
     `;
   });
 
-  // Render Modern Channels
-  state.discoveredChannels.forEach(ch => {
+  // Render Filtered Modern Channels
+  filteredChannels.forEach(ch => {
     const cid = ch.id || ch.channelUrl;
     const isChecked = state.selectedChatIds.has(cid) ? 'checked' : '';
-    const snippet = ch.preview ? ` • ${escapeHtml(ch.preview.slice(0, 24))}` : '';
-    const timeLabel = ch.time ? ` (${escapeHtml(ch.time)})` : '';
+    const snippet = ch.preview ? ` • ${escapeHtml(ch.preview.slice(0, 28))}` : '';
+    const timeLabel = ch.time ? escapeHtml(ch.time) : '';
+    const isDead = isDeletedAccount(ch);
+    const deadBadge = isDead ? '<span class="badge-card-deleted">DELETED</span>' : '';
+    const typeLabel = ch.type === 'group' ? '[GROUP]' : '[CHAT]';
+    const typeColor = ch.type === 'group' ? 'var(--accent-amber)' : 'var(--accent-ember)';
     html += `
       <div class="chat-item-card" data-id="${cid}">
         <input type="checkbox" class="chat-checkbox" data-id="${cid}" ${isChecked}>
         <div class="chat-item-details">
           <div class="chat-item-title">
-            <span style="color: var(--accent-ember); font-size: 9px; font-weight: 700;">[CHAT]</span>
-            u/${escapeHtml(ch.name || 'Conversation')}${timeLabel}
+            <span style="color: ${typeColor}; font-size: 9px; font-weight: 700;">${typeLabel}</span>
+            u/${escapeHtml(ch.name || 'Conversation')}
+            ${deadBadge}
           </div>
-          <div class="chat-item-meta">${ch.type.toUpperCase()}${snippet}</div>
+          <div class="chat-item-meta">
+            ${timeLabel ? `<span class="chat-time-tag">${timeLabel}</span>` : ''}
+            <span>${ch.type.toUpperCase()}${snippet}</span>
+          </div>
         </div>
       </div>
     `;
@@ -772,6 +858,9 @@ function renderChatChannelsList() {
   updateChatButtonStates();
 }
 
+/**
+ * Select or deselect all currently visible/filtered conversations
+ */
 function handleSelectAllChats(selectAll) {
   const checkboxes = el.chatChannelsList.querySelectorAll('.chat-checkbox');
   checkboxes.forEach(cb => {
@@ -786,14 +875,95 @@ function handleSelectAllChats(selectAll) {
   updateChatButtonStates();
 }
 
+/**
+ * Smart Preset: Select only deleted / deactivated accounts
+ */
+function handleSelectDeletedChats() {
+  const allItems = [...state.discoveredPMs, ...state.discoveredChannels];
+  let countAdded = 0;
+  allItems.forEach(item => {
+    const id = item.id || item.channelUrl;
+    if (isDeletedAccount(item)) {
+      state.selectedChatIds.add(id);
+      countAdded++;
+    } else {
+      state.selectedChatIds.delete(id);
+    }
+  });
+  log(`CHAT: Selected ${countAdded} deleted/inactive accounts.`, countAdded > 0 ? 'cyan' : 'warn');
+  renderChatChannelsList();
+}
+
+/**
+ * Smart Preset: Select conversations older than 6 months (180 days)
+ */
+function handleSelectOlderChats() {
+  const allItems = [...state.discoveredPMs, ...state.discoveredChannels];
+  const ONE_DAY_MS = 86400 * 1000;
+  const now = Date.now();
+  let countAdded = 0;
+
+  allItems.forEach(item => {
+    const id = item.id || item.channelUrl;
+    const ts = parseChatTimestamp(item);
+    const ageDays = (now - ts) / ONE_DAY_MS;
+    if (ageDays >= 180) {
+      state.selectedChatIds.add(id);
+      countAdded++;
+    } else {
+      state.selectedChatIds.delete(id);
+    }
+  });
+  log(`CHAT: Selected ${countAdded} conversations older than 6 months.`, countAdded > 0 ? 'cyan' : 'warn');
+  renderChatChannelsList();
+}
+
+/**
+ * Live search handler with debouncing
+ */
+let chatSearchTimeout = null;
+function handleChatSearch(query) {
+  if (chatSearchTimeout) clearTimeout(chatSearchTimeout);
+  chatSearchTimeout = setTimeout(() => {
+    state.chatFilters.search = query.trim();
+    if (el.btnChatSearchClear) {
+      if (state.chatFilters.search) {
+        el.btnChatSearchClear.classList.remove('hidden');
+      } else {
+        el.btnChatSearchClear.classList.add('hidden');
+      }
+    }
+    renderChatChannelsList();
+  }, 50);
+}
+
+/**
+ * Resets all chat filters to default
+ */
+function resetChatFilters() {
+  state.chatFilters = {
+    search: '',
+    dateRange: 'all',
+    accountStatus: 'all',
+    channelType: 'all'
+  };
+  if (el.chatSearchInput) el.chatSearchInput.value = '';
+  if (el.btnChatSearchClear) el.btnChatSearchClear.classList.add('hidden');
+  if (el.chatFilterDate) el.chatFilterDate.value = 'all';
+  if (el.chatFilterAccount) el.chatFilterAccount.value = 'all';
+  if (el.chatFilterType) el.chatFilterType.value = 'all';
+  renderChatChannelsList();
+}
+
 function updateChatButtonStates() {
   const count = state.selectedChatIds.size;
-  el.chatCountLabel.textContent = `${count} Selected`;
+  const totalDiscovered = state.discoveredPMs.length + state.discoveredChannels.length;
+  el.chatCountLabel.textContent = `${count} Selected (${totalDiscovered} Total)`;
   el.btnNukeChat.disabled = count === 0 || state.isChatPurging;
   if (!state.isChatPurging) {
     el.btnNukeChat.textContent = count > 0 ? `🔥 Purge Chats (${count})` : '🔥 Purge Chats';
   }
-  el.btnExportChat.disabled = (state.discoveredPMs.length + state.discoveredChannels.length) === 0;
+  el.btnExportChat.disabled = totalDiscovered === 0;
 }
 
 /**
@@ -846,6 +1016,7 @@ async function handleNukeChats() {
       {
         deletePMs: el.chatOptPms ? el.chatOptPms.checked : true,
         deleteModern: el.chatOptModern ? el.chatOptModern.checked : true,
+        autoHide: el.chatOptAutohide ? el.chatOptAutohide.checked : true,
         selectedChannelIds: Array.from(state.selectedChatIds)
       },
       (progress) => {
@@ -896,10 +1067,43 @@ function bindEvents() {
   el.btnResume.addEventListener('click', handleResume);
   el.btnAbort.addEventListener('click', handleAbort);
 
-  // Chat Drawer events
+  // Chat Workspace & Selective Filters
   el.btnScanChat.addEventListener('click', handleScanChat);
   el.btnSelectAllChats.addEventListener('click', () => handleSelectAllChats(true));
   el.btnDeselectAllChats.addEventListener('click', () => handleSelectAllChats(false));
+  if (el.btnSelectDeletedChats) {
+    el.btnSelectDeletedChats.addEventListener('click', handleSelectDeletedChats);
+  }
+  if (el.btnSelectOlderChats) {
+    el.btnSelectOlderChats.addEventListener('click', handleSelectOlderChats);
+  }
+  if (el.chatSearchInput) {
+    el.chatSearchInput.addEventListener('input', (e) => handleChatSearch(e.target.value));
+  }
+  if (el.btnChatSearchClear) {
+    el.btnChatSearchClear.addEventListener('click', () => {
+      if (el.chatSearchInput) el.chatSearchInput.value = '';
+      handleChatSearch('');
+    });
+  }
+  if (el.chatFilterDate) {
+    el.chatFilterDate.addEventListener('change', (e) => {
+      state.chatFilters.dateRange = e.target.value;
+      renderChatChannelsList();
+    });
+  }
+  if (el.chatFilterAccount) {
+    el.chatFilterAccount.addEventListener('change', (e) => {
+      state.chatFilters.accountStatus = e.target.value;
+      renderChatChannelsList();
+    });
+  }
+  if (el.chatFilterType) {
+    el.chatFilterType.addEventListener('change', (e) => {
+      state.chatFilters.channelType = e.target.value;
+      renderChatChannelsList();
+    });
+  }
   el.btnExportChat.addEventListener('click', handleExportChat);
   el.btnNukeChat.addEventListener('click', handleNukeChats);
   el.btnAbortChat.addEventListener('click', handleAbortChat);
@@ -926,4 +1130,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindEvents();
   await loadSavedFilters();
   await checkAuthSession();
+
+  try {
+    const { activeMode } = (await chrome.storage?.local?.get('activeMode')) || {};
+    if (activeMode === 'chat') {
+      switchMode('chat');
+    }
+  } catch (_) {}
 });
