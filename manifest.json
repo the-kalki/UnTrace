@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "UnTrace - Bulk Reddit Privacy Cleaner",
+  "version": "1.0.0",
+  "description": "Bulk overwrite and permanently delete Reddit posts, comments, and chat messages with a zero-clutter Chrome Side Panel.",
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Open UnTrace Side Panel",
+    "default_icon": {
+      "16": "assets/icons/icon-16.png",
+      "48": "assets/icons/icon-48.png",
+      "128": "assets/icons/icon-128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/sidepanel.html"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "alarms",
+    "tabs"
+  ],
+  "host_permissions": [
+    "*://*.reddit.com/*",
+    "*://gql.reddit.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://*.reddit.com/*"],
+      "js": ["src/content/content-script.js", "src/content/chat-bridge.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

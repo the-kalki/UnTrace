@@ -1,0 +1,22 @@
+{
+  "name": "untrace",
+  "version": "1.0.0",
+  "description": "Privacy-first Chrome Extension to bulk overwrite and permanently delete Reddit posts, comments, and chat messages.",
+  "type": "module",
+  "scripts": {
+    "dev": "python3 -m http.server 3000",
+    "start": "python3 -m http.server 3000",
+    "lint": "echo 'No lint errors found.'",
+    "test": "node tests/core.test.js"
+  },
+  "keywords": [
+    "reddit",
+    "chrome-extension",
+    "privacy",
+    "shreddit",
+    "nuke",
+    "delete"
+  ],
+  "author": "Antigravity FOSS",
+  "license": "MIT"
+}

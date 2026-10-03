@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Agent & AI IDE Internal Data
+.agents/
+.agent/
+.antigravity/
+
+# Logs & Temporary Files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+preview.pid
+preview.log
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE configurations
+.vscode/
+.idea/
